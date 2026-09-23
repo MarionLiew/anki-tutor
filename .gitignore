@@ -1,0 +1,24 @@
+# runtime state — never share another user's data
+state/*
+library/sources/*
+library/parsed/*
+library/manifests/*
+library/index/*
+!**/.gitkeep
+*.log
+
+# python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# env / secrets
+.env
+*.env
+keys/
+secrets/
+
+# os
+.DS_Store

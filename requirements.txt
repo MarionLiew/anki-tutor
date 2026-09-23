@@ -1,0 +1,6 @@
+# AnkiTutor runtime deps (ingest parsing only; the AnkiClient itself is stdlib-only).
+# Anki / AnkiConnect are external apps, not pip packages.
+pypdf>=4.0
+python-docx>=1.1
+# tests
+pytest>=8.0
