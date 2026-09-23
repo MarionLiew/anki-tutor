@@ -110,11 +110,20 @@ def test_update_bumps_version_and_preserves(svc, base_concept):
 
 
 # -- AC-06 / T04: grading mapping written back ----------------------------
-def test_grade_maps_to_ease(svc, base_concept):
+def test_grade_maps_to_ease(svc, base_concept, tmp_path):
     s, c = svc
     s.create(base_concept)
     cid = s.get("probability.bayes.base_rate")["card_ids"][0]
-    s.grade("probability.bayes.base_rate", 1)  # Again
+    p = tmp_path / "active_session.json"
+    sess = S.new_session("active_learning", concept={"concept_id": "probability.bayes.base_rate"})
+    sess.set_current_question("probability.bayes.base_rate", "Explain base rates", objective="L1")
+    sess.record_answer("wrong")
+    sess.advance_attempt(hint_level=1)
+    sess.record_answer("correct")
+    sess.set_current_question("probability.bayes.base_rate", "New scenario", objective="L1", is_transfer=True)
+    sess.record_answer("correct")
+    sess.save(p)
+    s.grade("probability.bayes.base_rate", 1, session=sess, path=p)  # Again
     assert c._cards[cid]["queue"] == 1  # went to learning
     assert c._cards[cid]["reps"] == 1
 
@@ -159,10 +168,15 @@ def test_level_is_verified_max_not_forced(svc, base_concept):
 
 
 # -- AC-07 / T08: source delete does not delete review history ------------
-def test_delete_protected_after_review(svc, base_concept):
+def test_delete_protected_after_review(svc, base_concept, tmp_path):
     s, _ = svc
     s.create(base_concept)
-    s.grade("probability.bayes.base_rate", 3)
+    p = tmp_path / "active_session.json"
+    sess = S.new_session("active_learning", concept={"concept_id": "probability.bayes.base_rate"})
+    sess.set_current_question("probability.bayes.base_rate", "Explain base rates", objective="L1")
+    sess.record_answer("correct")
+    sess.save(p)
+    s.grade("probability.bayes.base_rate", 3, session=sess, path=p)
     with pytest.raises(Exception):
         s.delete_unreviewed("probability.bayes.base_rate", confirm=True)
 
@@ -200,9 +214,9 @@ def test_session_budget_max_questions(svc, tmp_path):
     sess = S.new_session("active_learning", concept_queue=["c1"])
     for _ in range(8):
         sess.register_question()
-    assert sess.can_continue() is True
-    sess.register_question()  # 9th
     assert sess.can_continue() is False
+    with pytest.raises(S.SessionError):
+        sess.register_question()  # no ninth question
 
 
 # -- mode guard -----------------------------------------------------------

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -19,6 +20,9 @@ from concept_service import ConceptService, ConceptError  # noqa: E402
 from events import log_event  # noqa: E402
 from ingest import IngestError, IngestService  # noqa: E402
 from source_library import SourceLibrary  # noqa: E402
+from progression import decide_next  # noqa: E402
+from session import SessionError, load_session, new_session  # noqa: E402
+import strategy  # noqa: E402
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -35,6 +39,48 @@ def main(argv: list[str] | None = None) -> int:
     pr = sub.add_parser("retire"); pr.add_argument("concept_id"); pr.add_argument("--reason", default="")
     pm = sub.add_parser("merge"); pm.add_argument("source_id"); pm.add_argument("canonical_id")
     pi = sub.add_parser("ingest"); pi.add_argument("path"); pi.add_argument("--title", default=None); pi.add_argument("--list", action="store_true", default=False)
+    pn = sub.add_parser("next", help="check whether the current concept can be closed")
+    pn.add_argument("--first", required=True, choices=["correct", "partial", "wrong"])
+    pn.add_argument("--latest", required=True, choices=["correct", "partial", "wrong"])
+    pn.add_argument("--transfer", required=True, choices=["not_needed", "not_asked", "failed", "passed"])
+    pn.add_argument("--extension", default="same_concept", choices=["same_concept", "new_concept"])
+    pn.add_argument("--budget-exhausted", action="store_true")
+    pn.add_argument("--transfer-first-failed", action="store_true")
+
+    ps = sub.add_parser("strategy", help="explicit strategic goal profile (no inference)")
+    actions = ps.add_subparsers(dest="strategy_action", required=True)
+    for action in ("propose", "revise"):
+        sp = actions.add_parser(action)
+        sp.add_argument("candidate", choices=strategy.CANDIDATES)
+        sp.add_argument("--deliverable", required=True, help="one concrete user-chosen output")
+        sp.add_argument("--criterion", required=True, help="how the user will know it is done")
+        if action == "revise":
+            sp.add_argument("--revision", type=int, required=True)
+    for action in ("confirm", "expire"):
+        actions.add_parser(action).add_argument("--revision", type=int, required=True)
+    actions.add_parser("show")
+
+    psess = sub.add_parser("session", help="persist teaching evidence and resume it")
+    steps = psess.add_subparsers(dest="session_action", required=True)
+    start = steps.add_parser("start")
+    start.add_argument("concept_id")
+    start.add_argument("--mode", choices=["active_learning", "passive_review", "quick_quiz"], default="active_learning")
+    start.add_argument("--task", default="", help="current user-chosen deliverable, not inferred")
+    start.add_argument("--bottleneck", default="")
+    ask = steps.add_parser("ask")
+    ask.add_argument("concept_id"); ask.add_argument("question")
+    ask.add_argument("--objective", choices=["L0", "L1", "L2", "L3"], default="L1")
+    ask.add_argument("--transfer", action="store_true")
+    answer = steps.add_parser("answer")
+    answer.add_argument("verdict", choices=["correct", "partial", "wrong"])
+    answer.add_argument("--hinted", action="store_true")
+    hint = steps.add_parser("hint"); hint.add_argument("--level", type=int, default=1)
+    pause = steps.add_parser("pause")
+    pause.add_argument("--reason", choices=["user_request", "topic_switch", "interrupted"], default="user_request")
+    close = steps.add_parser("close")
+    close.add_argument("--reason", choices=["session_complete", "budget_exhausted", "user_request"], default="session_complete")
+    for step in ("show", "resume"):
+        steps.add_parser(step)
 
     args = p.parse_args(argv)
     try:
@@ -42,12 +88,102 @@ def main(argv: list[str] | None = None) -> int:
     except AnkiConnectUnreachable as e:
         print(json.dumps({"ok": False, "unreachable": True, "error": str(e)}))
         return 2
-    except (ConceptError, IngestError, ValueError) as e:
+    except (ConceptError, IngestError, SessionError, ValueError) as e:
         print(json.dumps({"ok": False, "error": str(e)}), file=sys.stderr)
         return 1
 
 
+def _session_path() -> Path:
+    return Path(os.environ.get("ANKITUTOR_STATE", str(Path(__file__).resolve().parent.parent / "state"))) / "active_session.json"
+
+
+def _session_dispatch(args) -> int:
+    path = _session_path()
+    action = args.session_action
+    current = load_session(path)
+    if action == "start":
+        if current is not None:
+            raise SessionError("existing session: resume or close it before starting another")
+        goal = strategy.show()
+        s = new_session(args.mode, concept_queue=[args.concept_id], concept={"concept_id": args.concept_id})
+        s.data["strategy_revision"] = goal.get("revision") if goal.get("status") == "confirmed" and not goal.get("due_for_review") else None
+        s.data["task"] = args.task
+        s.data["bottleneck"] = args.bottleneck
+        s.save(path)
+        log_event("learning_entered", session_id=s.session_id, mode=s.mode,
+                  concept_id=args.concept_id, reason="user_request")
+    else:
+        if current is None:
+            raise SessionError("no active session")
+        s = current
+        if action == "show":
+            goal = strategy.show()
+            data = dict(s.to_dict())
+            data["goal_needs_review"] = bool(s.data.get("strategy_revision") and
+                (goal.get("status") != "confirmed" or goal.get("due_for_review") or
+                 goal.get("revision") != s.data["strategy_revision"]))
+            print(json.dumps(data, ensure_ascii=False))
+            return 0
+        if action == "resume":
+            goal = strategy.show()
+            if s.data.get("strategy_revision") and (goal.get("status") != "confirmed" or
+                goal.get("due_for_review") or goal.get("revision") != s.data["strategy_revision"]):
+                raise SessionError("strategic goal changed or is due for review; align session before resuming")
+            s.resume(path)
+            log_event("learning_resumed", session_id=s.session_id, mode=s.mode,
+                      concept_id=s.current_concept, reason="user_request")
+        elif action == "pause":
+            if s.status != "paused":
+                s.pause(path)
+                log_event("learning_paused", session_id=s.session_id, mode=s.mode,
+                          concept_id=s.current_concept, reason=args.reason)
+        elif action == "ask":
+            if s.status == "paused":
+                raise SessionError("resume before asking")
+            s.set_current_question(args.concept_id, args.question, objective=args.objective,
+                                   is_transfer=args.transfer)
+            s.save(path)
+        elif action == "answer":
+            s.record_answer(args.verdict, hinted=args.hinted)
+            s.save(path)
+        elif action == "hint":
+            if s.status != "answer_received":
+                raise SessionError("hint only after evaluated answer")
+            s.advance_attempt(args.level)
+            s.save(path)
+        elif action == "close":
+            if s.status not in ("graded", "paused"):
+                raise SessionError("ungraded active session: pause instead of closing")
+            concept_id = s.current_concept
+            s.close(path)
+            log_event("learning_exited", session_id=s.session_id, mode=s.mode,
+                      concept_id=concept_id, reason=args.reason)
+    result = dict(s.to_dict())
+    if action == "answer":
+        decision = s.closure_decision(budget_exhausted=not s.can_continue())
+        result["decision"] = {"action": decision.action, "grade": decision.grade}
+    print(json.dumps(result, ensure_ascii=False))
+    return 0
+
+
 def _dispatch(args) -> int:
+    if args.cmd == "session":
+        return _session_dispatch(args)
+    if args.cmd == "strategy":
+        action = args.strategy_action
+        result = (strategy.show() if action == "show" else
+                  strategy.propose(args.candidate, args.deliverable, args.criterion) if action == "propose" else
+                  strategy.revise(args.candidate, args.revision, args.deliverable, args.criterion) if action == "revise" else
+                  strategy.confirm(args.revision) if action == "confirm" else
+                  strategy.expire(args.revision))
+        print(json.dumps(result, ensure_ascii=False))
+        return 0
+    if args.cmd == "next":
+        d = decide_next(args.first, args.latest, args.transfer,
+                        extension=args.extension, budget_exhausted=args.budget_exhausted,
+                        transfer_first_failed=args.transfer_first_failed)
+        print(json.dumps({"action": d.action, "grade": d.grade}))
+        return 0
     client = AnkiClient()
 
     if args.cmd == "health":
@@ -84,9 +220,13 @@ def _dispatch(args) -> int:
         return 0
 
     if args.cmd == "grade":
-        svc.grade(args.concept_id, args.ease)
-        log_event("review_graded", concept_id=args.concept_id, ease=args.ease)
-        print(json.dumps({"ok": True, "ease": args.ease}))
+        path = _session_path()
+        sess = load_session(path)
+        if sess is None:
+            raise SessionError("no active session evidence to grade")
+        svc.grade(args.concept_id, args.ease, session=sess, path=path)
+        log_event("review_graded", concept_id=args.concept_id, ease=args.ease, session_id=sess.session_id)
+        print(json.dumps({"ok": True, "ease": args.ease, "session_id": sess.session_id}))
         return 0
 
     if args.cmd == "retire":

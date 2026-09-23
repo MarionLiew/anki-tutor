@@ -21,10 +21,11 @@
 
 ## 它能做什么
 
-- **概念固定，题目动态。** 长期追踪同一个知识点，每次复习换新情境。
-- 答错先诊断（`error_type`）→ 给**最小提示** → 你重答 → 再出一道变式确认。agent 从不直接公布答案。
-- 评分硬规则：忘记或答错就是 `Again`，即使提示后想起了也不行（提示后想起不算首次检索成功）。
-- **Anki 依旧是调度唯一事实源**（FSRS）。AnkiTutor 只负责教学，不抢调度。
+- 概念固定，题目动态。长期追踪同一个知识点，每次复习换新情境。
+- 答错先给最小提示、再重答，随后用新情境验证迁移。明确要求解释时可以讲解，但首次不会仍按 `Again`。
+- 评分硬规则：忘记或答错就是 `Again`，提示后想起不算首次检索成功。
+- 同一个助手会留意是否在不影响学习目标的细节上耗尽时间，必要时建议换路；不另设导师人格，也不例行汇报。
+- Anki 依旧是调度唯一事实源（FSRS）。AnkiTutor 负责教学。
 
 ## 安装
 
@@ -36,8 +37,7 @@ https://github.com/MarionLiew/anki-tutor 。
 git clone 后创建 state/ 和 library/ 子目录，pip install -r requirements.txt，
 然后运行验证：
     cd ~/.anki-tutor && python3 src/cli.py health
-"OK" 表示 localhost:8765 上的 AnkiConnect 返回 6。如果 Anki 没在运行，
-直接说明即可——不要动我已有的任何文件、密钥或数据。
+AnkiConnect 健康检查成功会返回含 `"version": 6` 的 JSON。Anki 未运行就说明连接失败；不要动已有文件、密钥或数据。
 ```
 
 或者手敲命令：
@@ -49,17 +49,28 @@ pip install -r requirements.txt
 python3 src/cli.py ensure
 ```
 
-除 Python 3.10+ 外，还需要 **Anki 桌面版**和 **AnkiConnect 插件**（代码 `2055492159`，监听 `localhost:8765`）。没有 Anki，CLI 照常跑，但每次写入都会标"未持久化"——绝不假装成功。
+除 Python 3.10+ 外，还需要 **Anki 桌面版**和 **AnkiConnect 插件**（代码 `2055492159`，监听 `localhost:8765`）。没有 Anki 时，本地目标和会话命令仍可用，但无法核验或持久化 Anki 的读取与评分；不能声称 Anki 写入成功。
 
 ## 快速上手
 
 ```bash
-python3 src/cli.py health          # AnkiConnect 通不通
-python3 src/cli.py ensure          # 建牌组+题型，幂等
-python3 src/cli.py ingest notes.pdf --title "贝叶斯入门"   # 提取候选概念
-python3 src/cli.py due              # 有哪些到期
-python3 src/cli.py grade <concept> 3   # 评分：1=Again 2=Hard 3=Good 4=Easy
+python3 src/cli.py health
+python3 src/cli.py ensure
+python3 src/cli.py strategy show  # 未确认前不自动选主线
+# 下面仅为示例，必须先征得用户对目标与产出的确认。
+python3 src/cli.py strategy propose alpha --deliverable "一条可反驳的研究假设" --criterion "写明基准和成本"
+python3 src/cli.py strategy confirm --revision 1
+python3 src/cli.py session start quantos.research.mde_definition --task "审查基准" --bottleneck "理解 MDE"
+python3 src/cli.py session ask quantos.research.mde_definition "MDE 为两个百分点意味着什么？" --objective L1
+python3 src/cli.py session answer wrong  # 记录导师已判断的答案，CLI 不自行判开放题
+python3 src/cli.py session hint
+python3 src/cli.py session answer correct
+python3 src/cli.py session ask quantos.research.mde_definition "新情境：MDE 3pp、观察差异 1pp，怎么判断？" --objective L1 --transfer
+python3 src/cli.py session answer correct
+python3 src/cli.py grade quantos.research.mde_definition 1  # 证据允许后才回写
 ```
+
+`session show`、`session pause --reason topic_switch`、`session resume` 可保留当前题。进入、暂停、恢复、退出及原因会写入有上限的本地事件日志（1 MiB 加三份轮转备份），目前不是完整聊天记录。CLI 只记录导师对答案的判断，不能自动评判自由回答；Anki 写入结果不明时标为 pending，避免盲目重试。`next` 仅给只读建议，`grade` 则检查会话证据。
 
 每天一次被动复习（最多取 3 个到期概念，只发第一题）：
 
@@ -71,12 +82,16 @@ Hermes 上挂 Cron：`hermes cron create "0 20 * * *" --name anki-tutor-review -
 
 ## 怎么工作
 
+AnkiTutor 的教学路线要基于你明确确认的目标。提到 alpha、Polymarket 或黄金只会让它们成为候选，不会自动排优先级。目标需写明一个具体产出及完成判据；30 天后提示复核，不会擅自换方向。每轮另记当前任务和瓶颈；Anki 仍独自负责概念复习排程。本地目标存于 `state/strategy.json`（可用 `ANKITUTOR_STATE` 改目录），不是另一套掌握度数据库。
+
 | 组件 | 负责 |
 |-----------|------|
 | Anki + FSRS | 概念状态、复习历史、调度——唯一事实源 |
 | Source Library | 原始资料、页码锚点、SHA-256、来源追溯 |
 | TutorSession | 短期状态，让下一条消息能接着当前这题继续 |
-| AnkiTutor skill | 出题、诊断、最小提示、迁移验证 |
+| AnkiTutor skill | 出题、诊断、迁移验证、对话中的节奏判断 |
+
+导师视角不是第二个人格：它读取当前作答和 Anki 历史，只在换个方式可能更有用时插一句。一题答对不足以推断学习速度。证据范围和干预规则见 [docs/mentor-view.md](docs/mentor-view.md)。
 
 ```
 src/
@@ -97,7 +112,7 @@ AnkiTutor 不是又一个 Anki，不是独立导师 Bot，也不是 LMS。它是
 ## 环境与测试
 
 - Python 3.10+，`pypdf` / `python-docx`（解析用），`pytest`（测试用）
-- 测试完全离线、不需要 Anki：`python3 -m pytest tests/ -q`（15 个用例，mock AnkiConnect）
+- 测试完全离线、不需要 Anki：`python3 -m pytest tests/ -q`（mock AnkiConnect）
 
 ## 许可
 

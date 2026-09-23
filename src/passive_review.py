@@ -33,7 +33,7 @@ def run(limit: int = SESSION_POLICY["target_concepts"]) -> dict:
     # 1. resume, never double-create
     active = load_session()
     if active and active.status in ("asking", "waiting_answer", "answer_received",
-                                    "diagnosing", "verifying_transfer", "graded"):
+                                    "diagnosing", "verifying_transfer", "graded", "paused"):
         return {
             "action": "resume",
             "session_id": active.session_id,
@@ -68,8 +68,10 @@ def run(limit: int = SESSION_POLICY["target_concepts"]) -> dict:
     first = concepts[0]
 
     sess = new_session("passive_review", concept_queue=queue, concept=first)
-    sess.set_current_question(first["concept_id"], "")  # question filled by LLM
+    # The tutor has not generated/sent a question yet. Let `session ask` register it.
     sess.save()
+    log_event("learning_entered", session_id=sess.session_id, mode=sess.mode,
+              concept_id=first["concept_id"], reason="unknown")
     log_event("passive_review_started", session_id=sess.session_id, concepts=queue)
 
     return {

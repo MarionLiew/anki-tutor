@@ -345,12 +345,43 @@ class ConceptService:
         return {"deleted": concept_id, "note_id": c["note_id"]}
 
     # -- grading persistence ----------------------------------------------
-    def grade(self, concept_id: str, ease: int) -> dict:
+    def grade(self, concept_id: str, ease: int, *, session=None, path=None) -> dict:
+        """Evidence-bound, at-most-once submission.
+
+        A persisted pending marker precedes the remote call. A timeout can mean
+        Anki accepted it: do not retry until manually reconciled against Anki.
+        """
+        from pathlib import Path
+        from config import ACTIVE_SESSION_PATH
+        from session import SessionError, load_session
+
+        path = Path(path) if path is not None else ACTIVE_SESSION_PATH
+        persisted = load_session(path)
+        if session is None or persisted is None or session.session_id != persisted.session_id:
+            raise SessionError("grading requires the persisted current TutorSession")
+        if persisted.data.get("grade_state") or session.data.get("grade_state"):
+            raise SessionError("grading already submitted or outcome uncertain; reconcile manually")
+        if persisted.data != session.data:
+            raise SessionError("session differs from persisted state")
+        if session.current_concept != concept_id or session.status != "answer_received":
+            raise SessionError("concept mismatch or no evaluated answer")
+        decision = session.closure_decision(budget_exhausted=not session.can_continue())
+        if not ((decision.action == "close_concept" and decision.grade == ease) or
+                (decision.action == "close_with_gap" and ease == 1)):
+            raise SessionError(f"closure evidence does not authorize ease {ease}: {decision.action}/{decision.grade}")
+        if ease not in (1, 2, 3):
+            raise SessionError("Easy requires separately verified higher-level evidence")
         c = self.get(concept_id)
         if not c:
             raise ConceptError(f"ConceptID '{concept_id}' not found")
-        for card_id in c["card_ids"]:
-            self.client.grade_card(card_id, ease)
+        if len(c["card_ids"]) != 1:
+            raise ConceptError("expected exactly one concept card; refusing partial multi-card grading")
+        session.data["grade_state"] = "pending"
+        session.save(path)
+        self.client.grade_card(c["card_ids"][0], ease)
+        session.data["grade_state"] = "completed"
+        session.status = "graded"
+        session.save(path)
         return c
 
     def record_error(self, concept_id: str, error_type: str) -> dict:

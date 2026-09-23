@@ -11,7 +11,7 @@ Explicitly does NOT maintain next_review, FSRS values or any long-term mastery
 from __future__ import annotations
 
 import json
-import shutil
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
@@ -73,14 +73,18 @@ class TutorSession:
     # -- budget ------------------------------------------------------------
     def can_continue(self) -> bool:
         """False when question or duration budget is exhausted (§9.1)."""
-        if self.questions_used > SESSION_POLICY["max_questions"]:
+        if self.questions_used >= SESSION_POLICY["max_questions"]:
             return False
-        started = self.data.get("started_at_epoch")
-        if started is not None:
-            elapsed = _now_epoch() - started
-            if elapsed > SESSION_POLICY["hard_cap_duration_min"] * 60:
-                return False
+        if self.active_elapsed_seconds() >= SESSION_POLICY["hard_cap_duration_min"] * 60:
+            return False
         return True
+
+    def active_elapsed_seconds(self) -> float:
+        accumulated = float(self.data.get("active_seconds", 0))
+        anchor = self.data.get("active_since_epoch", self.data.get("started_at_epoch"))
+        if self.status == "paused" or anchor is None:
+            return accumulated
+        return accumulated + max(0, _now_epoch() - float(anchor))
 
     def budget_remaining(self) -> dict:
         return {
@@ -91,19 +95,78 @@ class TutorSession:
 
     # -- one-question rule -------------------------------------------------
     def register_question(self) -> None:
+        if self.status == "paused" or not self.can_continue():
+            raise SessionError("session paused or question/time budget exhausted")
+        if self.status == "waiting_answer":
+            raise SessionError("answer the current question before registering another")
         self.data["questions_used"] = int(self.data.get("questions_used", 0)) + 1
 
-    def set_current_question(self, concept_id: str, question: str) -> None:
+    def set_current_question(self, concept_id: str, question: str, objective: str = "L1",
+                             is_transfer: bool = False) -> None:
+        if objective not in ("L0", "L1", "L2", "L3") or not concept_id or not question:
+            raise SessionError("valid objective, concept and question required")
+        evidence = self.data.get("evidence")
+        if is_transfer and (not evidence or evidence["concept_id"] != concept_id or
+                            evidence["first_attempt"] is None or evidence["latest"] != "correct"):
+            raise SessionError("transfer requires a corrected first question")
+        if not is_transfer and evidence and evidence["concept_id"] != concept_id:
+            if self.data.get("grade_state") != "completed":
+                raise SessionError("grade or pause the current concept before changing concepts")
+            self.data.pop("grade_state", None)
+        if not is_transfer and (not evidence or evidence["concept_id"] != concept_id):
+            evidence = {"concept_id": concept_id, "objective": objective,
+                        "first_attempt": None, "latest": None, "hints_used": False,
+                        "transfer": "not_asked", "transfer_first_failed": False}
+        elif evidence["objective"] != objective:
+            raise SessionError("objective cannot change mid-concept")
+        self.register_question()
+        self.data["evidence"] = evidence
         self.data["current_concept"] = concept_id
         self.data["current_question"] = question
+        self.data["is_transfer_question"] = is_transfer
         self.data["attempt"] = 1
         self.data["hint_level"] = 0
         self.data["status"] = "waiting_answer"
 
     def advance_attempt(self, hint_level: int) -> None:
+        if hint_level < 0:
+            raise SessionError("invalid hint level")
+        if hint_level:
+            self.data["evidence"]["hints_used"] = True
         self.data["attempt"] = int(self.data.get("attempt", 1)) + 1
         self.data["hint_level"] = hint_level
         self.data["status"] = "waiting_answer"
+
+    def record_answer(self, verdict: str, *, hinted: bool = False) -> None:
+        """Record an externally evaluated answer, without inventing an evaluation."""
+        if verdict not in ("correct", "partial", "wrong"):
+            raise SessionError("invalid verdict")
+        if self.status != "waiting_answer" or not self.data.get("current_question"):
+            raise SessionError("no unanswered question")
+        evidence = self.data.get("evidence")
+        if not evidence or evidence["concept_id"] != self.current_concept:
+            raise SessionError("missing concept evidence")
+        hinted = hinted or self.hint_level > 0
+        evidence["hints_used"] = evidence["hints_used"] or hinted
+        if self.data.get("is_transfer_question"):
+            if verdict != "correct" or hinted:
+                evidence["transfer_first_failed"] = True
+            evidence["transfer"] = "passed" if verdict == "correct" and not hinted else "failed"
+        else:
+            if evidence["first_attempt"] is None:
+                evidence["first_attempt"] = "wrong" if hinted else verdict
+            evidence["latest"] = verdict
+        self.data["status"] = "answer_received"
+
+    def closure_decision(self, extension: str = "same_concept", budget_exhausted: bool = False):
+        from progression import decide_next
+        e = self.data.get("evidence")
+        if not e or e.get("first_attempt") is None or self.status not in ("answer_received", "diagnosing"):
+            raise SessionError("evaluated first attempt required")
+        return decide_next(e["first_attempt"], e["latest"], e["transfer"],
+                           extension=extension, budget_exhausted=budget_exhausted,
+                           transfer_first_failed=e["transfer_first_failed"],
+                           hints_used=e["hints_used"], objective=e["objective"])
 
     def allows_another_prompt(self) -> bool:
         """One question can retry up to a fixed cap before forcing a verdict."""
@@ -124,9 +187,13 @@ class TutorSession:
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix(path.suffix + ".tmp")
-        with tmp.open("w", encoding="utf-8") as fh:
+        fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            os.fchmod(fh.fileno(), 0o600)
             fh.write(self.to_json())
-        shutil.move(str(tmp), str(path))
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(str(tmp), str(path))
         log_event("session_saved", session_id=self.session_id, status=self.status)
 
     def close(self, path: Path = ACTIVE_SESSION_PATH) -> None:
@@ -142,7 +209,26 @@ class TutorSession:
 
     def pause(self, path: Path = ACTIVE_SESSION_PATH) -> None:
         path = Path(path)
+        if self.status == "paused":
+            return
+        self.data["resume_status"] = self.status
+        self.data["active_seconds"] = self.active_elapsed_seconds()
+        self.data["active_since_epoch"] = None
         self.data["status"] = "paused"
+        self.save(path)
+
+    def resume(self, path: Path = ACTIVE_SESSION_PATH) -> None:
+        if self.status != "paused":
+            raise SessionError("session is not paused")
+        self.data["status"] = self.data.pop("resume_status", "waiting_answer" if self.data.get("current_question") else "asking")
+        if self.data["status"] == "waiting_answer" and not self.data.get("evidence"):
+            # Legacy sessions stored a question but no verdict; keep the question,
+            # never invent an answer or a higher objective during migration.
+            self.data["evidence"] = {"concept_id": self.current_concept, "objective": "L1",
+                "first_attempt": None, "latest": None, "hints_used": False,
+                "transfer": "not_asked", "transfer_first_failed": False}
+            self.data["is_transfer_question"] = False
+        self.data["active_since_epoch"] = _now_epoch()
         self.save(path)
 
 
@@ -171,6 +257,7 @@ def new_session(
         "deep_misconceptions_tracked": 0,
         "started_at": started,
         "started_at_epoch": _now_epoch(),
+        "active_seconds": 0,
     }
     s = TutorSession(data)
     log_event(
