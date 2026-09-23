@@ -1,5 +1,9 @@
 # AnkiTutor
 
+<p align="center">
+  <b>English</b> · <a href="README.zh-CN.md">简体中文</a>
+</p>
+
 Fixed concepts. Fresh questions every review.
 
 **AnkiTutor** turns your AI assistant into an adaptive tutor on top of Anki. Store one Concept per note — the thing you want to remember — and every time it's due the agent writes a **new** question. Same card, never the same review, so you practice transfer instead of the answer key.
