@@ -1,139 +1,99 @@
 # AnkiTutor
 
-**自适应教学 Skill**：让 AI Agent（Hermes / Claude / 任意 LLM 主机）接管你的 Anki 复习——固定 Concept，动态出题；答错先诊断、给最小提示、要求重答，再用新情境迁移验证。
+Fixed concepts. Fresh questions every review.
 
-Anki 管遗忘（FSRS）、Source Library 管知识、AnkiTutor 管理解，交互主体是"Agent 本体"而不是独立 Bot。
+**AnkiTutor** turns your AI assistant into an adaptive tutor on top of Anki. Store one Concept per note — the thing you want to remember — and every time it's due the agent writes a **new** question. Same card, never the same review, so you practice transfer instead of the answer key.
 
-> 设计文档：`docs/engineering-spec.md` · MIT License
-
----
-
-## ✨ 一句话安装
-
-```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/MarionLiew/anki-tutor/main/install.sh)
+```
+Concept: base_rate_neglect
+─────────────────────────────────────────────
+Review 1:  "某病患病率1%，灵敏度90%，假阳10%，
+           检测阳性后实际患病概率？"
+Review 2:  "如果患病率是30%呢？"
+─────────────────────────────────────────────
+答错？ agent 给最小提示 → 你重答 →
+        再出一道全新变式确认你学会了。
 ```
 
-安装脚本会：
-1. 复制 `ANKI_TUTOR_HOME`（默认 `~/.anki-tutor`）
-2. 检测/提示安装 Anki + AnkiConnect 插件
-3. 配置环境路径，跑通 `python3 src/cli.py health`
-4. 输出使用说明
+## What it does
 
-### 手动安装（三行）
+- Fixed Concept, live questions. Tracks one knowledge point forever, serves a new scenario each review.
+- Wrong answers get a diagnosis (`error_type`), a minimal hint, a retry, then a transfer check. The agent never just reveals the answer.
+- Strict grading: forget or miss it and it's `Again`, even if you recall it right after a hint (doc rule: a hinted recall is not a first-try success).
+- Anki stays the source of truth for scheduling (FSRS). AnkiTutor only handles the teaching.
+
+## Install
+
+Paste this into any AI assistant (Hermes, Claude, GPT, …):
+
+```text
+Install AnkiTutor into ~/.anki-tutor from
+https://github.com/MarionLiew/anki-tutor . Clone it, create the state/ and
+library/ subdirs, pip install -r requirements.txt, then verify with:
+    cd ~/.anki-tutor && python3 src/cli.py health
+"OK" means AnkiConnect on localhost:8765 answers 6. If Anki isn't running,
+just say so — do not touch any of my existing files, keys, or data.
+```
+
+Or the plain commands:
 
 ```bash
 git clone https://github.com/MarionLiew/anki-tutor.git ~/.anki-tutor
-pip install -r requirements.txt   # pypdf / python-docx / requests
-python3 ~/.anki-tutor/src/cli.py ensure
-```
-
-### 依赖
-
-| 组件 | 用途 |
-|------|------|
-| [Anki](https://apps.ankiweb.net/) 桌面版 | 本地复习/FSRS 调度（真实数据层） |
-| [AnkiConnect](https://foosoft.net/projects/anki-connect/) 插件 | `localhost:8765` HTTP 接口 |
-| Python 3.10+ | 脚本层（AnkiClient / Session / Source Library） |
-
-> 不需要 Anki 也能学：脚本会把"未持久化"明确标出（见 §16 安全规则）。但复习调度必须 Anki 才能落地。
-
----
-
-## 这是什么
-
-Agent 变为自适应导师的核心逻辑，全部收敛在一个 skill 里：
-
-- **一次只出一题**，下一题由上一题的对错、置信度、错因、提示使用情况动态决定（绝不预生成整套试卷）
-- **紊乱解答优先确认**：答错 → 诊断 error_type → 给最小提示 → 要求重答 → 新情境变式验证
-- **Level = 已验证的最高能力层级**（L0 识别 / L1 回忆 / L2 应用 / L3 构造），不强制逐级跑到 L3
-- **评分硬规则**：忘记/答错必须 Again，提示后想起不记 Hard
-- **生命周期保守**：retire/suspend 优先，不删除有复习历史的概念
-
-## 架构
-
-```
-AnkiTutor skill
-├── src/
-│   ├── anki_client.py     # AnkiConnect HTTP 封装（CRUD/grade/suspend）
-│   ├── session.py         # TutorSession 状态机 + 题目预算
-│   ├── concept_service.py # ConceptID 去重 / merge / retire / 字段校验
-│   ├── source_library.py  # 资料存储 + SHA-256 + 页码索引
-│   ├── ingest.py          # PDF/DOCX/MD 解析 + 候选概念分块
-│   ├── passive_review.py  # Cron 入口：只推第一题 / 恢复 → 不新建
-│   ├── cli.py             # 确定性操作界面（health/ensure/grade/retire/merge/ingest）
-│   └── config.py          # 路径 / 字段 / 评分与会话策略 单一来源
-├── prompts/               # 出题 / 诊断 / 概念抽取 三个可维护提示模板
-├── scripts/               # launchd 自启 / 导入脚本
-│   └── install.sh         # ⬅ 一句话安装入口（仓库根）
-├── state/                 # 短期 Session + 事件日志（非长期学习事实源）
-├── library/               # sources / parsed / manifests / index
-└── tests/                 # mock AnkiConnect 离线单测（AC-01..09, T01..13）
-```
-
-## 快速上手
-
-```bash
 cd ~/.anki-tutor
-
-# 1. 环境 + 建牌组/模型（幂等）
+pip install -r requirements.txt
 python3 src/cli.py ensure
-python3 src/cli.py health
-
-# 2. 摄入一份资料 → 产生候选概念（不批量建卡）
-python3 src/cli.py ingest path/to/notes.pdf --title "贝叶斯入门"
-
-# 3. 主动学习：查看掌握情况 / 到期概念
-python3 src/cli.py search --topic probability
-python3 src/cli.py due --limit 3
-
-# 4. 评分 / 生命周期
-python3 src/cli.py grade quantos.probability.base_rate_neglect 3   # Again=1 Hard=2 Good=3 Easy=4
-python3 src/cli.py retire old.concept --reason "过时"
-python3 src/cli.py merge src.concept canonical.concept
 ```
 
-### Cron 被动复习（每小时/每日）
+Beyond Python 3.10 you need the **Anki desktop app** and the **AnkiConnect plugin** (code `2055492159`, listens on `localhost:8765`). Without Anki the CLI still works but flags every write as "not persisted" — it never fakes a success.
+
+## Quick start
 
 ```bash
-# 手动触发一次（只推第一题）
+python3 src/cli.py health          # is AnkiConnect reachable?
+python3 src/cli.py ensure          # create deck + note type (idempotent)
+python3 src/cli.py ingest notes.pdf --title "Bayes 入门"   # extract candidate concepts
+python3 src/cli.py due              # what's up for review
+python3 src/cli.py grade <concept> 3   # grade a review: 1=Again 2=Hard 3=Good 4=Easy
+```
+
+Daily passive review (pick ≤3 due concepts, send only the first question):
+
+```bash
 python3 src/passive_review.py
 ```
 
-配到 Hermes：`hermes cron create "0 20 * * *" --name anki-tutor-passive-review --skill anki-tutor`
+Cron on Hermes: `hermes cron create "0 20 * * *" --name anki-tutor-review --skill anki-tutor`
 
-### 测试
+## How it works
 
-```bash
-python3 -m pytest tests/ -q   # 15 项，mock AnkiConnect，无需真实 Anki
-```
-
----
-
-## 数据与隐私
-
-- AnkiConnect 仅绑定 `127.0.0.1`；Source Library 本地存储
-- 敏感 PDF 不上传外部模型（除非你明确选择）
-- 日志只记事件，不落 API key / 三方模型密钥 / 敏感原文
-
-## 已有概念示例（用户真实考卷复盘导入）
-
-考卷错题被自动转成带来源页码的 AnkiTutor Concept：
+| Component | Owns |
+|-----------|------|
+| Anki + FSRS | concept state, review history, scheduling — the source of truth |
+| Source Library | original material, page anchors, SHA-256, provenance |
+| TutorSession | short-lived state so the next message continues the current question |
+| AnkiTutor skill | question generation, diagnosis, minimal hints, transfer checks |
 
 ```
-quantos.probability.base_rate_neglect       # P02 贝叶斯基础率（逆概率谬误）
-quantos.probability.edge_vs_benchmark       # P07 概率优势 ≠ 下注优势
-quantos.research.mde_definition             # R06 MDE 定义
-quantos.research.strong_baseline_role       # R07 强 baseline 作用
-quantos.ops.fault_taxonomy                  # O03 数据/代码/研究失败分类
-quantos.contract.minimal_prediction_contract# C07 最小预测契约字段
-quantos.data.audit_chain                    # D08 数据可审计链 ≥6 节点
+src/
+  anki_client.py      AnkiConnect HTTP wrapper (CRUD / grade / suspend)
+  session.py          one-question state machine + budget (8 questions / 20 min cap)
+  concept_service.py  ConceptID dedupe, merge, retire, field validation
+  source_library.py   material store + hash + page index
+  ingest.py           PDF/DOCX/MD parse + candidate-concept chunking
+  passive_review.py   cron entry: first question only, resume before duplicate
+prompts/              question generation, diagnosis, concept extraction
+tests/                mock AnkiConnect — no live Anki needed
 ```
+
+## What it is not
+
+AnkiTutor isn't a new Anki, a standalone tutor bot, or an LMS. It's a skill the agent calls on demand. No web UI, no own scheduler, no generating fixed decks wholesale. Boundaries are the point — Anki stays the single scheduler, Source Library the single knowledge store.
+
+## Requirements & tests
+
+- Python 3.10+, `pypdf` / `python-docx` for ingest, `pytest` for tests.
+- Tests run fully offline, no Anki: `python3 -m pytest tests/ -q` (15 cases, mock AnkiConnect).
 
 ## License
 
-[MIT](LICENSE) © 2026 Marion Liew
-
-## 致谢
-
-设计参考 [OpenTutor](https://github.com/zijinz456/OpenTutor)（资料摄入/自适应教学/知识图谱思路）。
+MIT © 2026 Marion Liew. See [LICENSE](LICENSE).
