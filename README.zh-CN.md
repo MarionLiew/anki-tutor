@@ -53,13 +53,19 @@ python3 src/cli.py ensure
 
 ## 快速上手
 
+战略分三层：**outcome**（终局结果，如「我能独立验证一条 alpha 假设」）→ **roadmap**（通往结果的能力链，每项以核验过的产出物/判断为证据）→ **concept**（Anki 卡片，服务当前能力）。评分不推进目标——只有 roadmap 证据算推进。目标未确认时导师会主动问一次（7 天冷却）你想主推哪条线；方向永远从你嘴里确认，不从学习记录推断。
+
 ```bash
 python3 src/cli.py health
 python3 src/cli.py ensure
 python3 src/cli.py strategy show  # 未确认前不自动选主线
 # 下面仅为示例，必须先征得用户对目标与产出的确认。
-python3 src/cli.py strategy propose alpha --deliverable "一条可反驳的研究假设" --criterion "写明基准和成本"
+# outcome = 终局结果陈述（不是主题名）；roadmap = 能力链。
+python3 src/cli.py strategy propose alpha --outcome "独立验证一条策略假设" --criterion "自己重跑数据能通过审计"
 python3 src/cli.py strategy confirm --revision 1
+python3 src/cli.py strategy roadmap add "设计达到功效的检验"
+python3 src/cli.py strategy roadmap evidence "设计达到功效的检验" "2026-09-24 MDE 审计通过"
+python3 src/cli.py strategy roadmap gap            # 下一个该补的能力
 python3 src/cli.py session start quantos.research.mde_definition --task "审查基准" --bottleneck "理解 MDE"
 python3 src/cli.py session ask quantos.research.mde_definition "MDE 为两个百分点意味着什么？" --objective L1
 python3 src/cli.py session answer wrong  # 记录导师已判断的答案，CLI 不自行判开放题

@@ -23,9 +23,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from anki_client import AnkiClient, AnkiConnectUnreachable  # noqa: E402
 from concept_service import note_to_concept  # noqa: E402
 from config import DECK, SESSION_POLICY, ensure_dirs  # noqa: E402
-from events import log_event  # noqa: E402
-from session import load_session, new_session  # noqa: E402
+from events import log_event
+from session import load_session, new_session
 import observation  # noqa: E402
+import strategy  # noqa: E402
 
 
 def run(limit: int = SESSION_POLICY["target_concepts"]) -> dict:
@@ -113,7 +114,8 @@ def run(limit: int = SESSION_POLICY["target_concepts"]) -> dict:
             "max_questions": SESSION_POLICY["max_questions"],
             "target_concepts": SESSION_POLICY["target_concepts"],
         },
-        "next": "generate ONE question for current_concept via prompts/question_generation.md and send it",
+        "strategy": strategy.show(),
+        "next": "if strategy.should_ask_direction, first ask the user which line (alpha/Polymarket/gold) to prioritise; else generate ONE question for current_concept via prompts/question_generation.md and send it",
     }
 
 

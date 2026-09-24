@@ -28,7 +28,10 @@ metadata:
 - 不把墙上经过时间当学习时长；不凭一题推断学习速度，也不建立第二套掌握度或调度。用户询问整体进度时区分本轮观察与跨轮证据；缺少数据就说明。
 
 ## 战略方向盘（优先于逐题深挖）
+- **三层结构**：outcome（终局结果，如「独立验证一条 alpha 假设」）→ roadmap（通往结果的能力链，写明每项能力）→ concept（Anki 卡片，服务当前能力）。学习方向由用户确认；助手只能在 outcome 层帮用户起草措辞，最终权力在用户。
+- **进度不来自 Anki**：Anki 管概念记忆（FSRS）；roadmap 证据管能力达成。卡片 Good 不推进目标产出，只有产生并核验过产出物/真实判断（写进 roadmap evidence）才算推进。复盘问题是「哪个路线事件被推进了一格」，不是「学了什么」。
 - 学习优先服务用户明确选定的真实能力目标，而非把错题逐项清零。先问当前知识点能改善哪个现实决策或产出：如 alpha 研究的假设筛选与证据审计、Polymarket 单议题的概率预测与复盘、黄金研究的机制与样本外检验。用户决定主线，助手不擅自永久固定单一项目。
+- **选择下一个教学主题**：goal 为 confirmed 且 roadmap 非空时，优先补 roadmap 上第一个缺证据的能力（`strategy roadmap gap`），而不是按错题顺序复习已稳固的内容；若无 roadmap，先提议一条能力链再教学。
 - 一轮选一个真实任务和一个必要瓶颈，做最小教学、回到案例并检查产出。Anki 负责稳定概念的保留与复习，不决定学习方向；卡片答对不等于具备项目能力。
 - 延伸前过价值闸门：它会改变当前任务的判断、证据质量或下一步行动吗？若否，简答并列为可选支线；若是前置瓶颈，只补到能继续行动的程度，然后返回任务。最近错题多不等于战略上最重要。
 - 大部分精力留给用户选定的真实案例与复盘，少部分补关键知识与复习；比例是可调整起点而非假精确指标。区分可训练的研究/预测过程能力与不可保证的 alpha 或单次预测结果。
@@ -56,7 +59,9 @@ anki-tutor/
 脚本运行：`cd <skill>/src && python3 cli.py <cmd>`。所有操作**必须**走 CLI/`src`，Default Bot **不得**现场即兴写 Python 改 Anki（doc §14 模块职责 + 用户对确定性脚本的偏好）。
 
 ## 触发即执行的步骤
-1. 先 `python3 src/cli.py strategy show`；只有 `status=confirmed` 且未到复核日，才把该目标作为当前主线。未确认时可以按用户指定的具体主题学习，但不得从曾提到的兴趣推定优先级；目标提议须写 `--deliverable`/`--criterion`，用户明确确认后才运行 `strategy confirm --revision N`。
+1. 先 `python3 src/cli.py strategy show`；只有 `status=confirmed` 且未到复核日，才把该目标作为当前主线。未确认时可以按用户指定的具体主题学习，但不得从曾提到的兴趣推定优先级；目标提议须写 `--outcome`（终局结果陈述）/`--criterion`，用户明确确认后才运行 `strategy confirm --revision N`。
+   - **unconfirmed 时要主动问方向**：goal 为 unconfirmed 且 `should_ask_direction=true` 时，导师应在一次学习开场或 Cron 投递的第一句话里问一次「你当前主要想推进哪个方向（alpha / Polymarket / 黄金，或其他）」，用户答复后 `strategy propose + confirm`，随后 `strategy asked` 记录已问。之后 7 天内不再重复问（`should_ask_direction` 会变 false）；用户不答或岔开就照常教学，沉默不是拒绝。confirmed 后永远不再问。
+   - **roadmap 登记**：confirm 后提议一条能力链（`strategy roadmap add <capability>`），每产生经核验的产出物或真实判断后 `strategy roadmap evidence <entry_id> "<证据>"`。选下一个教学主题看 `strategy roadmap gap`。
 2. **AnkiConnect 可用性**：`python3 src/cli.py health`。不可达 → 允许临时教学，但结束时**明确未持久化**。
 3. **首次/缺失**：`python3 src/cli.py ensure` 建牌组 + Note Type（幂等）。
 4. 学习会话走 CLI：`session start <concept_id> [--task ... --bottleneck ...]`，发题前 `session ask <concept_id> <question> --objective L1/L2`（变式加 `--transfer`），诊断后 `session answer correct|partial|wrong`；错答后 `session hint`、重答。`session show/pause/resume` 管跨轮状态。先看到 `decision.action=close_concept` 或 `close_with_gap` 才能 `grade <concept_id> <ease>`；CLI 会对照已保存证据和首答/提示/迁移来拒绝不合规评分。更换概念前先评分，不得绕过。

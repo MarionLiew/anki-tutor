@@ -53,13 +53,23 @@ def main(argv: list[str] | None = None) -> int:
     for action in ("propose", "revise"):
         sp = actions.add_parser(action)
         sp.add_argument("candidate", choices=strategy.CANDIDATES)
-        sp.add_argument("--deliverable", required=True, help="one concrete user-chosen output")
+        sp.add_argument("--outcome", required=True, help="the end result the user wants")
         sp.add_argument("--criterion", required=True, help="how the user will know it is done")
         if action == "revise":
             sp.add_argument("--revision", type=int, required=True)
     for action in ("confirm", "expire"):
         actions.add_parser(action).add_argument("--revision", type=int, required=True)
     actions.add_parser("show")
+    actions.add_parser("asked")  # tutor just proactively asked the user for direction
+
+    pr = actions.add_parser("roadmap")
+    ract = pr.add_subparsers(dest="roadmap_action", required=True)
+    ra = ract.add_parser("add").add_argument("capability")
+    re_ = ract.add_parser("evidence")
+    re_.add_argument("entry_id")
+    re_.add_argument("evidence")
+    re_.add_argument("--clear", action="store_true", default=False)
+    ract.add_parser("gap")
 
     psess = sub.add_parser("session", help="persist teaching evidence and resume it")
     steps = psess.add_subparsers(dest="session_action", required=True)
@@ -268,11 +278,27 @@ def _dispatch(args) -> int:
         return _session_dispatch(args)
     if args.cmd == "strategy":
         action = args.strategy_action
-        result = (strategy.show() if action == "show" else
-                  strategy.propose(args.candidate, args.deliverable, args.criterion) if action == "propose" else
-                  strategy.revise(args.candidate, args.revision, args.deliverable, args.criterion) if action == "revise" else
-                  strategy.confirm(args.revision) if action == "confirm" else
-                  strategy.expire(args.revision))
+        if action == "show":
+            result = strategy.show()
+        elif action == "asked":
+            result = strategy.mark_asked() or {"status": "unconfirmed", "candidates": list(strategy.CANDIDATES)}
+        elif action == "roadmap":
+            if args.roadmap_action == "add":
+                result = strategy.roadmap_add(args.capability)
+            elif args.roadmap_action == "evidence":
+                result = strategy.roadmap_evidence(args.entry_id,
+                    "" if getattr(args, "clear", False) else args.evidence,
+                    "no_evidence" if getattr(args, "clear", False) else "evidenced")
+            else:
+                result = {"gap": strategy.next_gap()}
+        elif action == "propose":
+            result = strategy.propose(args.candidate, args.outcome, args.criterion)
+        elif action == "revise":
+            result = strategy.revise(args.candidate, args.revision, args.outcome, args.criterion)
+        elif action == "confirm":
+            result = strategy.confirm(args.revision)
+        else:
+            result = strategy.expire(args.revision)
         print(json.dumps(result, ensure_ascii=False))
         return 0
     if args.cmd == "next":

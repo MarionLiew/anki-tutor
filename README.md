@@ -53,13 +53,19 @@ Beyond Python 3.10 you need the **Anki desktop app** and the **AnkiConnect plugi
 
 ## Quick start
 
+Strategy has three layers: **outcome** (the end result, e.g. "I can independently validate an alpha hypothesis") → **roadmap** (the capability chain toward it, each entry holds a verified artifact/judgement as evidence) → **concepts** (Anki cards serving the current capability). Scores never advance the outcome — only roadmap evidence does. While the goal is unconfirmed the tutor asks you once (7-day cooldown) which line to prioritise; it never infers it from your study history.
+
 ```bash
 python3 src/cli.py health
 python3 src/cli.py ensure
 python3 src/cli.py strategy show   # unconfirmed until you choose a main line
 # Example only: do not confirm a goal on behalf of a user.
-python3 src/cli.py strategy propose alpha --deliverable "one falsifiable hypothesis" --criterion "baseline and costs documented"
+# outcome = the end result you want (not a topic name); roadmap = capability chain.
+python3 src/cli.py strategy propose alpha --outcome "independently validate one strategy hypothesis" --criterion "own rerun of the data passes audit"
 python3 src/cli.py strategy confirm --revision 1  # only after the user confirms this exact proposal
+python3 src/cli.py strategy roadmap add "design a statistically powered test"
+python3 src/cli.py strategy roadmap evidence "design a statistically powered test" "2026-09-24 MDE audit passed"
+python3 src/cli.py strategy roadmap gap            # next capability to teach
 python3 src/cli.py session start quantos.research.mde_definition --task "audit a baseline" --bottleneck "interpret MDE"
 python3 src/cli.py session ask quantos.research.mde_definition "What does an MDE of 2 percentage points mean?" --objective L1
 python3 src/cli.py session answer wrong  # record an evaluated answer, not a guessed verdict

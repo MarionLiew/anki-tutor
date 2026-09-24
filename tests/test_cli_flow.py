@@ -138,12 +138,12 @@ def test_cli_observe_auto_bind_scoped_chat(tmp_path, monkeypatch, capsys):
 
 def test_goal_revision_blocks_stale_resume(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("ANKITUTOR_STATE", str(tmp_path))
-    _, proposed = call(capsys, ["strategy", "propose", "alpha", "--deliverable", "alpha hypothesis", "--criterion", "baseline checked"])
+    _, proposed = call(capsys, ["strategy", "propose", "alpha", "--outcome", "alpha hypothesis", "--criterion", "baseline checked"])
     _, confirmed = call(capsys, ["strategy", "confirm", "--revision", str(proposed["revision"])])
     _, started = call(capsys, ["session", "start", "topic.alpha"])
     assert started["strategy_revision"] == confirmed["revision"]
     call(capsys, ["session", "pause"])
-    call(capsys, ["strategy", "revise", "gold", "--revision", str(confirmed["revision"]), "--deliverable", "gold hypothesis", "--criterion", "baseline checked"])
+    call(capsys, ["strategy", "revise", "gold", "--revision", str(confirmed["revision"]), "--outcome", "gold hypothesis", "--criterion", "baseline checked"])
     code, error = call(capsys, ["session", "resume"])
     assert code == 1 and "align session" in error["error"]
     _, shown = call(capsys, ["session", "show"])
