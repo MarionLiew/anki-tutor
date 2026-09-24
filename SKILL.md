@@ -97,6 +97,9 @@ anki-tutor/
 - `repair_current`/`probe_current`：只给最小提示或短追问，不切到新概念；`ask_transfer`：出一题新情境，不复述答案；`close_concept`/`close_then_introduce`：先核对并回写当前概念评分，再进入下一概念；`close_with_gap`：预算耗尽，按未掌握结案、明示缺口，不继续追问。
 - 延伸题答错后若用户立刻自行纠正，认可修正但仍核验关键区别；当前目标层级的迁移首次失败应加 `--transfer-first-failed`，不能因为后续修正记 Good。`transfer=not_needed` 只适用于当前目标无需迁移的情况，不能替代 L2 应用验证。
 - 「大概懂了」「继续」不是通过证明；尚未验证就给短变式，不用一大段讲义替代检索。解释用户明确问的公式或实务应用时分层回答，先给核心，再按需展开。
+- **判定先于换题**：用户自我修正值得肯定，但若仍混淆“题目假定的真实效果”与现实中观察到的样本差异，不能说“这题过了”。先用陌生场景短追问验证核心区别；只依据真实作答登记 verdict，不补写历史答题、不凭聊天宣称 Anki 已评分。
+- **概率题先封存预测时点**：不要写“对最终发生的事件报高概率”来暗示事后知道结果；改为“预测时点前冻结概率，事后按档统计”。区分校准、区分度和增量价值。10 场里报 90% 而发生 6 场是过度自信的警讯，不足以证实长期失准；原题若有多个成立答案，承认题目歧义并修题。
+- 换到无关话题就 `session pause --reason topic_switch`；Cron 对 paused 返回 skip 时不发题、不自动恢复。用户明确回到学习后先 `session show`/`session resume`，保留未评分的原概念；更换新概念不把旧概念当作已掌握。
 
 ## LEVEL（§7.1）
 Level = **"已验证的最高能力层级"**（L0 识别 / L1 回忆 / L2 应用 / L3 构造）。
@@ -117,7 +120,7 @@ Level = **"已验证的最高能力层级"**（L0 识别 / L1 回忆 / L2 应用
 - 生命周期：**默认 retire/suspend，不删除有复习历史的 Concept**；只有明确垃圾且未复习、或用户明确确认，才允许 delete_unreviewed(confirm=True)。
 
 ## CRON（Phase 3）
-每日投递 `passive_review`：若存在 active Review Session → 恢复（**不创建第二个**）；否则查 due，最多 3 个，建 Review Session 并只发第 1 题。Cron 自身不判断 mastery、不直接决定 Level、不独立推进题目状态（§8）。
+每日投递 `passive_review`：若已有 paused Session → 返回 skip，不发送、不恢复、不创建第二个；其他 active Session → 返回当前题供用户驱动；否则查 due，最多 3 个，建 Review Session 并只发第 1 题。Cron 自身不判断 mastery、不直接决定 Level、不独立推进题目状态（§8）。
 
 ## 失败处理（doc §13/§16）
 | 故障 | 行为 |

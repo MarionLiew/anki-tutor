@@ -65,4 +65,5 @@ def test_passive_review_starts_without_fabricated_question(tmp_path, monkeypatch
     saved.save(path)
     assert passive_review.run()["action"] == "resume"
     saved.pause(path)
-    assert passive_review.run()["action"] == "resume"
+    paused_tick = passive_review.run()
+    assert paused_tick["action"] == "skip" and paused_tick["reason"] == "session_paused"

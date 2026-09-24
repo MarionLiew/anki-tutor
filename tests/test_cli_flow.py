@@ -83,8 +83,10 @@ def test_learning_lifecycle_records_reasons(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("ANKITUTOR_STATE", str(tmp_path))
     monkeypatch.setattr(events, "EVENTS_LOG_PATH", tmp_path / "events.jsonl")
     call(capsys, ["session", "start", "topic.mde"])
-    call(capsys, ["session", "pause", "--reason", "topic_switch"])
+    _, paused = call(capsys, ["session", "pause", "--reason", "topic_switch"])
+    assert paused["pause_reason"] == "topic_switch"
     call(capsys, ["session", "resume"])
+    assert "pause_reason" not in call(capsys, ["session", "show"])[1]
     call(capsys, ["session", "pause", "--reason", "user_request"])
     call(capsys, ["session", "close", "--reason", "user_request"])
     records = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]

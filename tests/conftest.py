@@ -38,7 +38,7 @@ def isolated_state(tmp_path, monkeypatch):
     monkeypatch.setattr(events, "EVENTS_LOG_PATH", event_log)
     monkeypatch.setattr(session, "ACTIVE_SESSION_PATH", active)
     for method in (session.TutorSession.save, session.TutorSession.close,
-                   session.TutorSession.pause, session.TutorSession.resume,
-                   session.load_session, session.active_session_exists,
-                   session.clear_session):
+                   session.TutorSession.resume, session.load_session,
+                   session.active_session_exists, session.clear_session):
         monkeypatch.setattr(method, "__defaults__", (active,))
+    monkeypatch.setattr(session.TutorSession.pause, "__defaults__", (active, "user_request"))

@@ -217,7 +217,7 @@ def _session_dispatch(args) -> int:
                     except (ValueError, OSError):
                         # Preserve the session even if its Hermes transcript moved.
                         pass
-                s.pause(path)
+                s.pause(path, reason=args.reason)
                 _note("learning_paused", session_id=s.session_id, concept_id=s.current_concept,
                       reason=args.reason)
                 log_event("learning_paused", session_id=s.session_id, mode=s.mode,

@@ -33,8 +33,15 @@ def run(limit: int = SESSION_POLICY["target_concepts"]) -> dict:
 
     # 1. resume, never double-create
     active = load_session()
+    if active and active.status == "paused":
+        return {
+            "action": "skip", "reason": "session_paused",
+            "session_id": active.session_id,
+            "pause_reason": active.data.get("pause_reason", "unknown"),
+            "note": "Do not re-send a paused question. Resume only after the user explicitly returns to learning.",
+        }
     if active and active.status in ("asking", "waiting_answer", "answer_received",
-                                    "diagnosing", "verifying_transfer", "graded", "paused"):
+                                    "diagnosing", "verifying_transfer", "graded"):
         return {
             "action": "resume",
             "session_id": active.session_id,
