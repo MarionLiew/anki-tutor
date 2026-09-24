@@ -60,16 +60,19 @@ def main(argv: list[str] | None = None) -> int:
     for action in ("confirm", "expire"):
         actions.add_parser(action).add_argument("--revision", type=int, required=True)
     actions.add_parser("show")
-    actions.add_parser("asked")  # tutor just proactively asked the user for direction
+    pa = actions.add_parser("asked")  # tutor just proactively asked the user for direction
+    pa.add_argument("--because", choices=["cron_delivery", "session_opening", "review_due"], required=True)
 
     pr = actions.add_parser("roadmap")
     ract = pr.add_subparsers(dest="roadmap_action", required=True)
-    ra = ract.add_parser("add").add_argument("capability")
+    ra = ract.add_parser("add")
+    ra.add_argument("capability"); ra.add_argument("--kind", choices=["required", "optional"], default="required")
     re_ = ract.add_parser("evidence")
     re_.add_argument("entry_id")
     re_.add_argument("evidence")
     re_.add_argument("--clear", action="store_true", default=False)
-    ract.add_parser("gap")
+    rg = ract.add_parser("gap")
+    rg.add_argument("--serving", default="", help="current task the teaching should serve")
 
     psess = sub.add_parser("session", help="persist teaching evidence and resume it")
     steps = psess.add_subparsers(dest="session_action", required=True)
@@ -281,16 +284,16 @@ def _dispatch(args) -> int:
         if action == "show":
             result = strategy.show()
         elif action == "asked":
-            result = strategy.mark_asked() or {"status": "unconfirmed", "candidates": list(strategy.CANDIDATES)}
+            result = strategy.mark_asked(getattr(args, "because", None)) or {"status": "unconfirmed", "candidates": list(strategy.CANDIDATES)}
         elif action == "roadmap":
             if args.roadmap_action == "add":
-                result = strategy.roadmap_add(args.capability)
+                result = strategy.roadmap_add(args.capability, kind=args.kind)
             elif args.roadmap_action == "evidence":
                 result = strategy.roadmap_evidence(args.entry_id,
                     "" if getattr(args, "clear", False) else args.evidence,
                     "no_evidence" if getattr(args, "clear", False) else "evidenced")
             else:
-                result = {"gap": strategy.next_gap()}
+                result = {"gap": strategy.next_gap(serving=getattr(args, "serving", "") or None)}
         elif action == "propose":
             result = strategy.propose(args.candidate, args.outcome, args.criterion)
         elif action == "revise":

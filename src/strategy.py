@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -67,6 +68,10 @@ def show() -> dict:
     result = _v2(dict(data))
     result["due_for_review"] = data["status"] == "confirmed" and _now() >= datetime.fromisoformat(data["review_due_at"])
     result["should_ask_direction"] = (data["status"] != "confirmed" and _should_ask(data))
+    if result["due_for_review"]:
+        # Monthly full review: outcome/goal still right? Mention once, do not nag.
+        result["review_note"] = ("monthly goal review is due: confirm the outcome still fits "
+                                 "or run strategy revise --revision N")
     return result
 
 
@@ -91,12 +96,21 @@ def _should_ask(data: dict) -> bool:
         return True
 
 
-def mark_asked() -> dict | None:
-    """Record that the tutor proactively asked the user for direction."""
+def mark_asked(because: str | None = None) -> dict | None:
+    """Record that the tutor proactively asked the user for direction.
+
+    because: what prompted the ask — 'cron_delivery', 'session_opening' or
+    'review_due'. Recorded in asked_reason for the monthly review, so the
+    ask isn't a silently writable side effect.
+    """
+    prompts = {"cron_delivery", "session_opening", "review_due"}
+    if because not in prompts:
+        raise ValueError("ask reason must be one of " + ", ".join(sorted(prompts)))
     data = _read()
     if data is None:
         return None
     data["asked_at"] = _now().isoformat()
+    data["asked_reason"] = because
     _write(data)
     return show()
 
@@ -157,7 +171,9 @@ def confirm(revision: int) -> dict:
     if not data or data["status"] != "proposed" or data["revision"] != revision:
         raise ValueError("confirmation requires the current proposed revision")
     now = _now()
-    data.update(status="confirmed", updated_at=now.isoformat(), review_due_at=(now + timedelta(days=TTL_DAYS)).isoformat(), revision=revision + 1)
+    # Confirming ratifies the current version: the revision number does NOT
+    # advance here (it counts roadmap versions, not write operations).
+    data.update(status="confirmed", updated_at=now.isoformat(), review_due_at=(now + timedelta(days=TTL_DAYS)).isoformat())
     return _write(data)
 
 
@@ -170,6 +186,9 @@ def revise(candidate: str, revision: int, outcome: str = "", criterion: str = ""
     previous = data
     update = _outcome(candidate, outcome, criterion, previous, status="proposed")
     update["asked_at"] = data.get("asked_at")
+    # Roadmap content survives a terminology-only revision so evidence is not lost.
+    if previous.get("roadmap"):
+        update["roadmap"] = previous["roadmap"]
     return _write(update)
 
 
@@ -182,7 +201,11 @@ def _roadmap_entry(data: dict, entry_id: str) -> dict:
     raise ValueError(f"no roadmap entry {entry_id}")
 
 
-def roadmap_add(capability: str) -> dict:
+def roadmap_add(capability: str, kind: str = "required") -> dict:
+    """kind: required (directly on the path to the criterion) or
+    optional (supporting skill; never blocks the next-gap choice)."""
+    if kind not in ("required", "optional"):
+        raise ValueError("kind must be required or optional")
     data = _read()
     if not data or data["status"] != "confirmed":
         raise ValueError("roadmap requires a confirmed strategy")
@@ -192,7 +215,7 @@ def roadmap_add(capability: str) -> dict:
     if any(e["id"] == cap for e in data["roadmap"]):
         raise ValueError(f"roadmap already has {cap}")
     data["roadmap"].append({"id": cap, "capability": _short(capability, "capability"),
-                            "status": "no_evidence", "evidence": None})
+                            "kind": kind, "status": "no_evidence", "evidence": None})
     data["updated_at"] = _now().isoformat()
     return _write(data)
 
@@ -212,14 +235,37 @@ def roadmap_evidence(entry_id: str, evidence: str, status: str = "evidenced") ->
     return _write(data)
 
 
-def next_gap() -> dict | None:
-    """First roadmap entry without evidence — suggests where to teach next."""
+def _serves(entry_cap: str, serving: str) -> bool:
+    """Either direction contains the other, or they share a meaningful word."""
+    a, b = entry_cap.lower(), serving.strip().lower()
+    if a in b or b in a:
+        return True
+    stop = {"a", "the", "and", "of", "for", "to", "in", "on", "with", "的", "与", "和"}
+    words_a = {w for w in re.split(r"[\s_-]+", a) if len(w) > 2 and w not in stop}
+    words_b = {w for w in re.split(r"[\s_-]+", b) if len(w) > 2 and w not in stop}
+    return bool(words_a & words_b)
+
+
+def next_gap(serving: str | None = None) -> dict | None:
+    """First required roadmap entry without evidence.
+
+    serving: the current task/bottleneck, if any. When given, an entry that
+    directly serves it is returned first (the roadmap order is a suggested
+    path, not a straitjacket — the user's live task wins).
+    """
     data = _read()
     if not data or data["status"] != "confirmed":
         return None
+    if serving:
+        for e in data["roadmap"]:
+            if e["status"] != "evidenced" and _serves(e["capability"], serving):
+                return {"id": e["id"], "capability": e["capability"],
+                        "kind": e.get("kind", "required"), "status": e["status"],
+                        "reason": "serves_current_task"}
     for e in data["roadmap"]:
-        if e["status"] != "evidenced":
-            return {"id": e["id"], "capability": e["capability"], "status": e["status"]}
+        if e["status"] != "evidenced" and e.get("kind", "required") == "required":
+            return {"id": e["id"], "capability": e["capability"], "kind": e["kind"],
+                    "status": e["status"], "reason": "next_required_gap"}
     return None
 
 

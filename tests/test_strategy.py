@@ -33,16 +33,18 @@ def test_explicit_lifecycle_and_privacy(state):
         strategy.confirm(0)
     confirmed = strategy.confirm(1)
     assert confirmed["status"] == "confirmed"
-    assert confirmed["revision"] == 2
+    # Confirm ratifies the current version: revision counts roadmap versions.
+    assert confirmed["revision"] == 1
     assert confirmed["due_for_review"] is False
     assert set(json.loads(state.read_text())) == {"version", "revision", "status", "candidate", "outcome",
                                                  "criterion", "roadmap", "updated_at", "review_due_at"}
     assert state.stat().st_mode & 0o777 == 0o600
     with pytest.raises(ValueError):
-        strategy.revise("gold", 1, "gold hypothesis", "baseline checked")
-    changed = strategy.revise("gold", 2, "gold hypothesis", "baseline checked")
+        strategy.revise("gold", 2, "gold hypothesis", "baseline checked")
+    changed = strategy.revise("gold", 1, "gold hypothesis", "baseline checked")
     assert changed["status"] == "proposed"
-    assert strategy.expire(3)["status"] == "expired"
+    assert changed["revision"] == 2  # revise advances the roadmap version
+    assert strategy.expire(2)["status"] == "expired"
     assert strategy.propose("Polymarket", "one forecast reviewed", "resolved and reviewed")["status"] == "proposed"
 
 
@@ -53,18 +55,28 @@ def test_roadmap_chain_and_gap(state):
     assert strategy.next_gap() is None
     strategy.roadmap_add("Design a testable experiment")
     strategy.roadmap_add("Judge the strength of baseline")
-    assert strategy.next_gap() == {"id": "design a testable experiment",
-                                   "capability": "Design a testable experiment", "status": "no_evidence"}
+    strategy.roadmap_add("Troubleshoot stuck automation", kind="optional")
+    assert strategy.next_gap()["id"] == "design a testable experiment"
+    # The live task wins over roadmap order: it may pull an optional entry first.
+    gap = strategy.next_gap(serving="automation stuck troubleshoot")
+    assert gap["id"] == "troubleshoot stuck automation" and gap["reason"] == "serves_current_task"
     strategy.roadmap_evidence("design a testable experiment",
                               "2026-09-24 experiment audit plus reproduction chain passed")
     assert strategy.next_gap()["id"] == "judge the strength of baseline"
     with pytest.raises(ValueError):
         strategy.roadmap_evidence("nonexistent", "text")
     with pytest.raises(ValueError):
-        strategy.roadmap_add("Design a testable experiment")  # duplicate id
+        strategy.roadmap_add("Design a testable experiment")  # duplicate
+    with pytest.raises(ValueError):
+        strategy.roadmap_add("x", kind="sideshow")
     strategy.roadmap_evidence("judge the strength of baseline", "", status="no_evidence")
     assert strategy.roadmap_evidence("judge the strength of baseline",
                                      "2026-09-24 strong-baseline explanation accepted")["roadmap"][1]["status"] == "evidenced"
+    # Optional entries without a matching serving task never mask required gaps.
+    strategy.roadmap_add("Post-hoc follow-through", kind="optional")
+    assert strategy.next_gap(serving="unrelated current task") is None
+    # Both required entries have evidence; only the unlabeled optional remains
+    # and it does not count as a required gap.
     assert strategy.next_gap() is None
 
 
@@ -78,8 +90,11 @@ def test_ask_direction_flag_and_cooldown(state, monkeypatch):
     assert strategy.show()["should_ask_direction"] is True
     strategy.propose("alpha", "independent validation", "baseline checked")
     assert strategy.show()["should_ask_direction"] is True
-    # Simulate having asked recently: no nudge.
-    strategy.mark_asked()
+    with pytest.raises(ValueError):
+        strategy.mark_asked()  # ask reason is mandatory
+    strategy.mark_asked("session_opening")
+    data = json.loads(state.read_text())
+    assert data["asked_reason"] == "session_opening"
     assert strategy.show()["should_ask_direction"] is False
     import datetime
     future = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=8)
@@ -132,11 +147,12 @@ def test_cli_no_anki_dependency(state):
     assert json.loads(call("propose", "gold", "--outcome", "reproduce a gold report from raw data",
                            "--criterion", "own rerun matches the headline").stdout)["revision"] == 1
     assert call("confirm", "--revision", "9").returncode == 1
-    assert json.loads(call("confirm", "--revision", "1").stdout)["status"] == "confirmed"
+    assert json.loads(call("confirm", "--revision", "1").stdout)["revision"] == 1
     assert json.loads(call("roadmap", "add", "audit the data lineage").stdout)["roadmap"][0]["status"] == "no_evidence"
     assert json.loads(call("roadmap", "evidence", "audit the data lineage", "2026-09-24 PIT chain audit passed").stdout)["roadmap"][0]["status"] == "evidenced"
     assert json.loads(call("roadmap", "gap").stdout)["gap"] is None
-    assert json.loads(call("revise", "alpha", "--revision", "2", "--outcome", "alpha hypothesis",
+    assert json.loads(call("revise", "alpha", "--revision", "1", "--outcome", "alpha hypothesis",
                            "--criterion", "baseline checked").stdout)["status"] == "proposed"
-    assert json.loads(call("expire", "--revision", "3").stdout)["status"] == "expired"
-    assert json.loads(call("asked").stdout)["asked_at"] is not None or call("asked").returncode == 0
+    assert json.loads(call("expire", "--revision", "2").stdout)["status"] == "expired"
+    assert call("asked").returncode != 0  # ask reason is mandatory (argparse exits 2)
+    assert json.loads(call("asked", "--because", "review_due").stdout)["status"] == "expired"

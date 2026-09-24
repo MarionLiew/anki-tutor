@@ -64,8 +64,10 @@ python3 src/cli.py strategy show   # unconfirmed until you choose a main line
 python3 src/cli.py strategy propose alpha --outcome "independently validate one strategy hypothesis" --criterion "own rerun of the data passes audit"
 python3 src/cli.py strategy confirm --revision 1  # only after the user confirms this exact proposal
 python3 src/cli.py strategy roadmap add "design a statistically powered test"
+python3 src/cli.py strategy roadmap add "troubleshoot stuck automation" --kind optional
 python3 src/cli.py strategy roadmap evidence "design a statistically powered test" "2026-09-24 MDE audit passed"
-python3 src/cli.py strategy roadmap gap            # next capability to teach
+python3 src/cli.py strategy roadmap gap                       # next required capability
+python3 src/cli.py strategy roadmap gap --serving "polymarket data collection stuck"  # live task first
 python3 src/cli.py session start quantos.research.mde_definition --task "audit a baseline" --bottleneck "interpret MDE"
 python3 src/cli.py session ask quantos.research.mde_definition "What does an MDE of 2 percentage points mean?" --objective L1
 python3 src/cli.py session answer wrong  # record an evaluated answer, not a guessed verdict

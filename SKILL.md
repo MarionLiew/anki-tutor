@@ -31,7 +31,8 @@ metadata:
 - **三层结构**：outcome（终局结果，如「独立验证一条 alpha 假设」）→ roadmap（通往结果的能力链，写明每项能力）→ concept（Anki 卡片，服务当前能力）。学习方向由用户确认；助手只能在 outcome 层帮用户起草措辞，最终权力在用户。
 - **进度不来自 Anki**：Anki 管概念记忆（FSRS）；roadmap 证据管能力达成。卡片 Good 不推进目标产出，只有产生并核验过产出物/真实判断（写进 roadmap evidence）才算推进。复盘问题是「哪个路线事件被推进了一格」，不是「学了什么」。
 - 学习优先服务用户明确选定的真实能力目标，而非把错题逐项清零。先问当前知识点能改善哪个现实决策或产出：如 alpha 研究的假设筛选与证据审计、Polymarket 单议题的概率预测与复盘、黄金研究的机制与样本外检验。用户决定主线，助手不擅自永久固定单一项目。
-- **选择下一个教学主题**：goal 为 confirmed 且 roadmap 非空时，优先补 roadmap 上第一个缺证据的能力（`strategy roadmap gap`），而不是按错题顺序复习已稳固的内容；若无 roadmap，先提议一条能力链再教学。
+- **选择下一个教学主题**：候选优先级是 (1) 用户当前真实任务/瓶颈（`strategy roadmap gap --serving "<当前任务>"`，即使是 optional 项，只要直接服务当前任务也可以先教）；(2) roadmap 上第一个缺证据的 required 能力；(3) 都没有时再按错题/复习驱动。roadmap 顺序是建议路径不是枷锁，当前任务优先。若无 roadmap，先提议一条能力链再教学。
+- **roadmap 分 required/optional**：required = 直接通往 criterion 的能力；optional = 支撑性技能（记 `--kind optional`），只在服务当前任务时插队，不挡 required 的缺口。工具类能力（如自动化运维）通常是 optional，除非 outcome 明确包含它。
 - 一轮选一个真实任务和一个必要瓶颈，做最小教学、回到案例并检查产出。Anki 负责稳定概念的保留与复习，不决定学习方向；卡片答对不等于具备项目能力。
 - 延伸前过价值闸门：它会改变当前任务的判断、证据质量或下一步行动吗？若否，简答并列为可选支线；若是前置瓶颈，只补到能继续行动的程度，然后返回任务。最近错题多不等于战略上最重要。
 - 大部分精力留给用户选定的真实案例与复盘，少部分补关键知识与复习；比例是可调整起点而非假精确指标。区分可训练的研究/预测过程能力与不可保证的 alpha 或单次预测结果。
@@ -60,7 +61,8 @@ anki-tutor/
 
 ## 触发即执行的步骤
 1. 先 `python3 src/cli.py strategy show`；只有 `status=confirmed` 且未到复核日，才把该目标作为当前主线。未确认时可以按用户指定的具体主题学习，但不得从曾提到的兴趣推定优先级；目标提议须写 `--outcome`（终局结果陈述）/`--criterion`，用户明确确认后才运行 `strategy confirm --revision N`。
-   - **unconfirmed 时要主动问方向**：goal 为 unconfirmed 且 `should_ask_direction=true` 时，导师应在一次学习开场或 Cron 投递的第一句话里问一次「你当前主要想推进哪个方向（alpha / Polymarket / 黄金，或其他）」，用户答复后 `strategy propose + confirm`，随后 `strategy asked` 记录已问。之后 7 天内不再重复问（`should_ask_direction` 会变 false）；用户不答或岔开就照常教学，沉默不是拒绝。confirmed 后永远不再问。
+   - **unconfirmed 时要主动问方向**：goal 为 unconfirmed 且 `should_ask_direction=true` 时，导师应在一次学习开场或 Cron 投递的第一句话里问一次「你当前主要想推进哪个方向（alpha / Polymarket / 黄金，或其他）」，用户答复后 `strategy propose + confirm`，随后 `strategy asked --because session_opening|cron_delivery` 记录已问。之后 7 天内不再重复问（`should_ask_direction` 会变 false）；用户不答或岔开就照常教学，沉默不是拒绝。confirmed 后永远不再问。
+   - **每次学习顺带轻核对**：每次进入学习/Cron 投递本来就先跑 `strategy show`——返回里 `due_for_review=true` 时用一句「目标 到期复核：这条主线还成立吗？」顺带问一下即可，不打断节奏；用户确认后 `strategy confirm --revision N`（同版本再确认，revision 不变）或 `strategy revise` 更新措辞（revision+1）。**不等月末专门打断，也不建独立 Cron 提醒**。
    - **roadmap 登记**：confirm 后提议一条能力链（`strategy roadmap add <capability>`），每产生经核验的产出物或真实判断后 `strategy roadmap evidence <entry_id> "<证据>"`。选下一个教学主题看 `strategy roadmap gap`。
 2. **AnkiConnect 可用性**：`python3 src/cli.py health`。不可达 → 允许临时教学，但结束时**明确未持久化**。
 3. **首次/缺失**：`python3 src/cli.py ensure` 建牌组 + Note Type（幂等）。

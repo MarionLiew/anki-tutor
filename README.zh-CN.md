@@ -64,8 +64,10 @@ python3 src/cli.py strategy show  # 未确认前不自动选主线
 python3 src/cli.py strategy propose alpha --outcome "独立验证一条策略假设" --criterion "自己重跑数据能通过审计"
 python3 src/cli.py strategy confirm --revision 1
 python3 src/cli.py strategy roadmap add "设计达到功效的检验"
+python3 src/cli.py strategy roadmap add "排查卡死的自动化流水线" --kind optional
 python3 src/cli.py strategy roadmap evidence "设计达到功效的检验" "2026-09-24 MDE 审计通过"
-python3 src/cli.py strategy roadmap gap            # 下一个该补的能力
+python3 src/cli.py strategy roadmap gap                       # 下一个缺证据的 required 能力
+python3 src/cli.py strategy roadmap gap --serving "Polymarket 采集卡住"  # 当前任务优先
 python3 src/cli.py session start quantos.research.mde_definition --task "审查基准" --bottleneck "理解 MDE"
 python3 src/cli.py session ask quantos.research.mde_definition "MDE 为两个百分点意味着什么？" --objective L1
 python3 src/cli.py session answer wrong  # 记录导师已判断的答案，CLI 不自行判开放题
