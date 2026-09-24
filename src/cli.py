@@ -22,6 +22,7 @@ from ingest import IngestError, IngestService  # noqa: E402
 from source_library import SourceLibrary  # noqa: E402
 from progression import decide_next  # noqa: E402
 from session import SessionError, load_session, new_session  # noqa: E402
+import observation  # noqa: E402
 import strategy  # noqa: E402
 
 
@@ -82,6 +83,12 @@ def main(argv: list[str] | None = None) -> int:
     for step in ("show", "resume"):
         steps.add_parser(step)
 
+    po = sub.add_parser("observe", help="bounded learning metadata + current scoped chat")
+    obs = po.add_subparsers(dest="observe_action", required=True)
+    for action in ("show", "bind"):
+        obs.add_parser(action)
+    obs.add_parser("issue").add_argument("type", choices=sorted(observation.ISSUES))
+
     args = p.parse_args(argv)
     try:
         return _dispatch(args)
@@ -97,6 +104,59 @@ def _session_path() -> Path:
     return Path(os.environ.get("ANKITUTOR_STATE", str(Path(__file__).resolve().parent.parent / "state"))) / "active_session.json"
 
 
+def _observation_path() -> Path:
+    return _session_path().with_name("learning_observations.jsonl")
+
+
+def _note(kind: str, **fields) -> None:
+    try:
+        observation.record(_observation_path(), kind, **fields)
+    except OSError:
+        # The teaching state is authoritative; observation failures are visible
+        # as absent evidence, not a reason to repeat a potentially remote write.
+        pass
+
+
+def _observe_dispatch(args) -> int:
+    s = load_session(_session_path())
+    action = args.observe_action
+    if action == "bind":
+        if not s:
+            raise SessionError("no active learning session to bind")
+        if s.data.get("observation_binding"):
+            raise SessionError("observation already bound; refusing to change scope")
+        s.data["observation_binding"] = observation.bind()
+        s.save(_session_path())
+        print(json.dumps({"ok": True, "bound": True, "session_id": s.session_id}))
+        return 0
+    if action == "issue":
+        if not s:
+            raise SessionError("no active learning session for mentor issue")
+        observation.record(_observation_path(), "mentor_issue", session_id=s.session_id, issue=args.type)
+        print(json.dumps({"ok": True, "issue": args.type}))
+        return 0
+    summary = observation.report(_observation_path())
+    goal = strategy.show()
+    summary["goal"] = {k: goal.get(k) for k in ("status", "candidate", "deliverable", "criterion", "due_for_review", "revision")}
+    summary["active_session"] = ({"session_id": s.session_id, "status": s.status,
+        "concept_id": s.current_concept, "questions_used": s.questions_used,
+        "task": s.data.get("task"), "bottleneck": s.data.get("bottleneck"),
+        "evidence": s.data.get("evidence"), "grade_state": s.data.get("grade_state")}
+        if s else None)
+    summary["chat_excerpts"] = []
+    summary["chat_scope"] = "unbound"
+    if s and s.data.get("observation_binding"):
+        binding = s.data["observation_binding"]
+        db = observation.db_path()
+        until = binding.get("until_id")
+        if until is None:
+            until = observation.watermark(db, binding)
+        summary["chat_excerpts"] = observation.read_range(db, binding, until)
+        summary["chat_scope"] = "active_learning_segment_only"
+    print(json.dumps(summary, ensure_ascii=False))
+    return 0
+
+
 def _session_dispatch(args) -> int:
     path = _session_path()
     action = args.session_action
@@ -109,7 +169,14 @@ def _session_dispatch(args) -> int:
         s.data["strategy_revision"] = goal.get("revision") if goal.get("status") == "confirmed" and not goal.get("due_for_review") else None
         s.data["task"] = args.task
         s.data["bottleneck"] = args.bottleneck
+        try:
+            s.data["observation_binding"] = observation.bind()
+        except (ValueError, OSError):
+            # Non-Hermes callers can still teach; they have no chat scope.
+            pass
         s.save(path)
+        _note("learning_entered", session_id=s.session_id, mode=s.mode,
+              concept_id=args.concept_id, reason="user_request")
         log_event("learning_entered", session_id=s.session_id, mode=s.mode,
                   concept_id=args.concept_id, reason="user_request")
     else:
@@ -130,11 +197,29 @@ def _session_dispatch(args) -> int:
                 goal.get("due_for_review") or goal.get("revision") != s.data["strategy_revision"]):
                 raise SessionError("strategic goal changed or is due for review; align session before resuming")
             s.resume(path)
+            if s.data.get("observation_binding", {}).get("until_id") is not None:
+                try:
+                    s.data["observation_binding"] = observation.bind()
+                    s.save(path)
+                except (ValueError, OSError):
+                    s.data.pop("observation_binding", None)
+                    s.save(path)
+            _note("learning_resumed", session_id=s.session_id, concept_id=s.current_concept,
+                  reason="user_request")
             log_event("learning_resumed", session_id=s.session_id, mode=s.mode,
                       concept_id=s.current_concept, reason="user_request")
         elif action == "pause":
             if s.status != "paused":
+                binding = s.data.get("observation_binding")
+                if binding and "until_id" not in binding:
+                    try:
+                        binding["until_id"] = observation.watermark(observation.db_path(), binding)
+                    except (ValueError, OSError):
+                        # Preserve the session even if its Hermes transcript moved.
+                        pass
                 s.pause(path)
+                _note("learning_paused", session_id=s.session_id, concept_id=s.current_concept,
+                      reason=args.reason)
                 log_event("learning_paused", session_id=s.session_id, mode=s.mode,
                           concept_id=s.current_concept, reason=args.reason)
         elif action == "ask":
@@ -143,19 +228,29 @@ def _session_dispatch(args) -> int:
             s.set_current_question(args.concept_id, args.question, objective=args.objective,
                                    is_transfer=args.transfer)
             s.save(path)
+            _note("question_asked", session_id=s.session_id, concept_id=args.concept_id,
+                  objective=args.objective)
         elif action == "answer":
             s.record_answer(args.verdict, hinted=args.hinted)
             s.save(path)
+            _note("answer_evaluated", session_id=s.session_id, concept_id=s.current_concept,
+                  verdict=args.verdict, hinted=bool(s.hint_level or args.hinted))
+            if s.data.get("is_transfer_question"):
+                _note("transfer_checked", session_id=s.session_id, concept_id=s.current_concept,
+                      transfer="passed" if args.verdict == "correct" and not s.hint_level and not args.hinted else "failed")
         elif action == "hint":
             if s.status != "answer_received":
                 raise SessionError("hint only after evaluated answer")
             s.advance_attempt(args.level)
             s.save(path)
+            _note("hint_given", session_id=s.session_id, concept_id=s.current_concept)
         elif action == "close":
             if s.status not in ("graded", "paused"):
                 raise SessionError("ungraded active session: pause instead of closing")
             concept_id = s.current_concept
             s.close(path)
+            _note("learning_exited", session_id=s.session_id, concept_id=concept_id,
+                  reason=args.reason)
             log_event("learning_exited", session_id=s.session_id, mode=s.mode,
                       concept_id=concept_id, reason=args.reason)
     result = dict(s.to_dict())
@@ -167,6 +262,8 @@ def _session_dispatch(args) -> int:
 
 
 def _dispatch(args) -> int:
+    if args.cmd == "observe":
+        return _observe_dispatch(args)
     if args.cmd == "session":
         return _session_dispatch(args)
     if args.cmd == "strategy":
@@ -225,6 +322,8 @@ def _dispatch(args) -> int:
         if sess is None:
             raise SessionError("no active session evidence to grade")
         svc.grade(args.concept_id, args.ease, session=sess, path=path)
+        _note("grade_submitted", session_id=sess.session_id,
+              concept_id=args.concept_id, ease=args.ease)
         log_event("review_graded", concept_id=args.concept_id, ease=args.ease, session_id=sess.session_id)
         print(json.dumps({"ok": True, "ease": args.ease, "session_id": sess.session_id}))
         return 0

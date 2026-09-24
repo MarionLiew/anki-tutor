@@ -25,6 +25,7 @@ from concept_service import note_to_concept  # noqa: E402
 from config import DECK, SESSION_POLICY, ensure_dirs  # noqa: E402
 from events import log_event  # noqa: E402
 from session import load_session, new_session  # noqa: E402
+import observation  # noqa: E402
 
 
 def run(limit: int = SESSION_POLICY["target_concepts"]) -> dict:
@@ -68,8 +69,19 @@ def run(limit: int = SESSION_POLICY["target_concepts"]) -> dict:
     first = concepts[0]
 
     sess = new_session("passive_review", concept_queue=queue, concept=first)
+    try:
+        sess.data["observation_binding"] = observation.bind()
+    except (ValueError, OSError):
+        pass
     # The tutor has not generated/sent a question yet. Let `session ask` register it.
     sess.save()
+    try:
+        from config import STATE_DIR
+        observation.record(STATE_DIR / "learning_observations.jsonl", "learning_entered",
+                           session_id=sess.session_id, concept_id=first["concept_id"],
+                           mode=sess.mode, reason="unknown")
+    except OSError:
+        pass
     log_event("learning_entered", session_id=sess.session_id, mode=sess.mode,
               concept_id=first["concept_id"], reason="unknown")
     log_event("passive_review_started", session_id=sess.session_id, concepts=queue)

@@ -70,7 +70,7 @@ python3 src/cli.py session answer correct
 python3 src/cli.py grade quantos.research.mde_definition 1  # 证据允许后才回写
 ```
 
-`session show`、`session pause --reason topic_switch`、`session resume` 可保留当前题。进入、暂停、恢复、退出及原因会写入有上限的本地事件日志（1 MiB 加三份轮转备份），目前不是完整聊天记录。CLI 只记录导师对答案的判断，不能自动评判自由回答；Anki 写入结果不明时标为 pending，避免盲目重试。`next` 仅给只读建议，`grade` 则检查会话证据。
+`session show`、`session pause --reason topic_switch`、`session resume` 可保留当前题。新增 `observe show` 可查看有上限的学习观察报告：进入/暂停/恢复/退出、作答判断、提示、迁移、评分，以及用 `observe issue <type>` 明确标记的导师失误。在 Hermes 中开启新学习会话会绑定当前聊天；报告按需只读最多 20 条当前学习片段的用户/助手消息摘要，**不把聊天原文复制进日志**。旧会话可用 `observe bind` 从此刻开始关联，无法倒推之前的聊天；无绑定时仅显示结构化记录。独立观察元数据日志上限为 1 MiB 加两份轮转备份；旧 `events.jsonl` 混有测试记录，不应视为纯净学习历史。CLI 不会自行判断自由回答，`grade` 检查已保存证据，Anki 写入结果不明时标为 pending。
 
 每天一次被动复习（最多取 3 个到期概念，只发第一题）：
 

@@ -70,7 +70,7 @@ python3 src/cli.py session answer correct
 python3 src/cli.py grade quantos.research.mde_definition 1  # only after evidence authorizes it
 ```
 
-`session show`, `session pause --reason topic_switch` and `session resume` preserve the current question across turns. Enter/pause/resume/exit transitions are recorded with reasons in a bounded local event log (1 MiB + three backups), not a full chat transcript. The CLI records the tutor's evaluated verdict; it cannot independently judge a free-text answer. An uncertain Anki write is marked pending rather than retried blindly. `next` is a read-only advisory route; `grade` checks persisted session evidence before writing.
+`session show`, `session pause --reason topic_switch` and `session resume` preserve the current question across turns. The new `observe show` command gives a bounded, learning-only observation report: typed enter/pause/resume/exit, verdict, hint, transfer and grade events plus mentor mistakes explicitly flagged with `observe issue <type>`. When run from Hermes, a new session binds its current chat; the report reads up to 20 recent user/assistant excerpts from that learning segment **on demand** without copying raw chat to disk. Legacy sessions can use `observe bind` to begin from now. Without a Hermes binding, excerpts are unavailable. The dedicated metadata log rotates at 1 MiB plus two backups; older `events.jsonl` includes test records and is not a clean learning history. The CLI cannot independently judge free-text answers; `grade` checks persisted evidence and uncertain Anki writes are marked pending.
 
 Daily passive review (pick ≤3 due concepts, send only the first question):
 

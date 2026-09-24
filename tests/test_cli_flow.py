@@ -96,6 +96,44 @@ def test_learning_lifecycle_records_reasons(tmp_path, monkeypatch, capsys):
                            ("learning_exited", "user_request")]
 
 
+def test_cli_observe_auto_bind_scoped_chat(tmp_path, monkeypatch, capsys):
+    import observation
+    import cli
+    from test_observation import make_db
+    db = tmp_path / "state.db"
+    make_db(db)
+    monkeypatch.setenv("ANKITUTOR_STATE", str(tmp_path / "learning"))
+    monkeypatch.setenv("HERMES_SESSION_ID", "selected")
+    monkeypatch.setenv("HERMES_SESSION_PROFILE", "default")
+    monkeypatch.setenv("HERMES_SESSION_SOURCE", "desktop")
+    monkeypatch.setattr(observation, "db_path", lambda: db)
+    call(capsys, ["session", "start", "topic.mde"])
+    # New user/assistant turns after the learning entry are read from Hermes
+    # on demand. The raw text is not copied into AnkiTutor state/log files.
+    import sqlite3
+    con = sqlite3.connect(db)
+    con.execute("INSERT INTO messages VALUES (8,'selected','user','What is MDE?',1,0)")
+    con.execute("INSERT INTO messages VALUES (9,'other','user','PRIVATE OTHER CHAT',1,0)")
+    con.commit(); con.close()
+    code, result = call(capsys, ["observe", "show"])
+    assert code == 0 and result["chat_scope"] == "active_learning_segment_only"
+    assert result["chat_excerpts"] == [{"id": 8, "role": "user", "excerpt": "What is MDE?"}]
+    call(capsys, ["session", "pause", "--reason", "topic_switch"])
+    con = sqlite3.connect(db)
+    con.execute("INSERT INTO messages VALUES (10,'selected','user','UNRELATED AFTER PAUSE',1,0)")
+    con.commit(); con.close()
+    assert "UNRELATED AFTER PAUSE" not in json.dumps(call(capsys, ["observe", "show"])[1])
+    call(capsys, ["session", "resume"])
+    con = sqlite3.connect(db)
+    con.execute("INSERT INTO messages VALUES (11,'selected','user','Back to MDE',1,0)")
+    con.commit(); con.close()
+    assert call(capsys, ["observe", "show"])[1]["chat_excerpts"] == [
+        {"id": 11, "role": "user", "excerpt": "Back to MDE"}]
+    assert "What is MDE?" not in (tmp_path / "learning" / "active_session.json").read_text()
+    call(capsys, ["observe", "issue", "revealed_answer_too_early"])
+    assert call(capsys, ["observe", "show"])[1]["mentor_issues"]["revealed_answer_too_early"] == 1
+
+
 def test_goal_revision_blocks_stale_resume(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("ANKITUTOR_STATE", str(tmp_path))
     _, proposed = call(capsys, ["strategy", "propose", "alpha", "--deliverable", "alpha hypothesis", "--criterion", "baseline checked"])

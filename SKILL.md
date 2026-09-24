@@ -79,7 +79,7 @@ anki-tutor/
 ## SESSION POLICY（§9.1）
 - 目标 3 个 Concept；普通 4-6 题；最多 8 题；目标 10-15 分钟；硬上限 20 分钟。导入多个错点不等于一轮全部学完。
 - 发题前使用 `session ask`（内部调用 `set_current_question` 并登记题数，勿额外 `register_question`）；用户回答后 `session answer` 记录导师评估，必要时变式验证，再 `grade`。不得仅在聊天里说「会了」却不回写；若无法回写则明示未持久化。
-- 用户切换话题时 `session pause --reason topic_switch` 保留原题；恢复时沿用原题，不把暂停期间的墙上时间算作学习速度。进入/暂停/恢复/退出应记有原因的事件，不能从沉默推断退出；`session close` 不等于已掌握。事件日志限 1 MiB + 三份轮转备份，尚不是自动抓取聊天原文的观察层。
+- 用户切换话题时 `session pause --reason topic_switch` 保留原题；恢复时沿用原题，不把暂停期间的墙上时间算作学习速度。进入/暂停/恢复/退出应记有原因的事件，不能从沉默推断退出；`session close` 不等于已掌握。观察记录读 `python3 src/cli.py observe show`：新学习会话自动关联当前 Hermes 聊天片段（旧会话需 `observe bind` 从现在起关联），只按需读取当前绑定会话最多 20 条短摘录，不复制原文到本地日志；结构化日志 `learning_observations.jsonl` 限 1 MiB + 两份轮转。导师失误确认后用 `observe issue <type>` 标记，不能凭日志缺口猜测学习速度。旧 `events.jsonl` 混有测试记录，不可拿它作真实学习证据。
 - 明显掌握：通常 1 题通过。不确定：通常 2 题。误解：2-3 题。
 - **每轮最多重点深挖 1 个深层错误模型**（`deep_misconception_limit=1`）。
 - **一次只展示 1 题**；下一题必须基于上一题的 correctness / confidence / error_type / hint 使用情况 / 当前 Level 动态决定，**不预生成整套题**（§9.2）。
