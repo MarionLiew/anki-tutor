@@ -78,7 +78,7 @@ anki-tutor/
 6. 每轮一个 Concept 走完（→ 诊断 → 必要时迁移验证）后，`cli.py grade` 回写 + 必要时 `record_error` / `set_level`。
 
 ## PASSIVE REVIEW（被动复习 / Cron）
-1. `python3 src/cli.py due --limit 3` 查 active + due 的 Concept（一次最多 3 个）。
+1. 先检查现有 Session：当天暂停不打扰；暂停满 24 小时后发送一次轻提醒，但保持 paused，不自动恢复、不新建第二个 Session。没有 Session 时再用 `python3 src/cli.py due --limit 3` 查 active + due 的 Concept（一次最多 3 个）。
 2. 读取 CoreKnowledge / Level / CommonErrors / SourceRefs。
 3. 创建/恢复 Review Session（`state/`）。
 4. **只生成并发送当前第 1 题**；后续由用户回答驱动（§8：Cron 绝不连续推整组题，绝不输出长篇课程）。若无 due 概念则不强行教学。
@@ -127,7 +127,7 @@ Level = **"已验证的最高能力层级"**（L0 识别 / L1 回忆 / L2 应用
 - 生命周期：**默认 retire/suspend，不删除有复习历史的 Concept**；只有明确垃圾且未复习、或用户明确确认，才允许 delete_unreviewed(confirm=True)。
 
 ## CRON（Phase 3）
-每日投递 `passive_review`：若已有 paused Session → 返回 skip，不发送、不恢复、不创建第二个；其他 active Session → 返回当前题供用户驱动；否则查 due，最多 3 个，建 Review Session 并只发第 1 题。Cron 自身不判断 mastery、不直接决定 Level、不独立推进题目状态（§8）。
+每日投递 `passive_review`：若已有 paused Session，当天保持静默；暂停满 24 小时后只发一条轻提醒，仍不恢复、不创建第二个；其他 active Session → 返回当前题供用户驱动；否则查 due，最多 3 个，建 Review Session 并只发第 1 题。Cron 自身不判断 mastery、不直接决定 Level、不独立推进题目状态（§8）。
 
 ## 失败处理（doc §13/§16）
 | 故障 | 行为 |

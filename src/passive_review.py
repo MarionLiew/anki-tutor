@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -29,17 +30,32 @@ import observation  # noqa: E402
 import strategy  # noqa: E402
 
 
-def run(limit: int = SESSION_POLICY["target_concepts"]) -> dict:
+PAUSED_REMINDER_AFTER_SECONDS = 24 * 60 * 60
+
+
+def run(limit: int = SESSION_POLICY["target_concepts"], now_epoch: float | None = None) -> dict:
     ensure_dirs()
 
     # 1. resume, never double-create
     active = load_session()
     if active and active.status == "paused":
+        paused_at = active.data.get("paused_at_epoch")
+        now = time.time() if now_epoch is None else now_epoch
+        if paused_at is None or now - float(paused_at) >= PAUSED_REMINDER_AFTER_SECONDS:
+            return {
+                "action": "remind_paused",
+                "reason": "paused_session_due_for_reminder",
+                "session_id": active.session_id,
+                "pause_reason": active.data.get("pause_reason", "unknown"),
+                "current_concept": active.current_concept,
+                "current_question": active.data.get("current_question"),
+                "note": "Send one light reminder. Keep the session paused; do not auto-resume or create a second session.",
+            }
         return {
             "action": "skip", "reason": "session_paused",
             "session_id": active.session_id,
             "pause_reason": active.data.get("pause_reason", "unknown"),
-            "note": "Do not re-send a paused question. Resume only after the user explicitly returns to learning.",
+            "note": "Paused less than 24 hours; do not remind on the same day.",
         }
     if active and active.status in ("asking", "waiting_answer", "answer_received",
                                     "diagnosing", "verifying_transfer", "graded"):

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
@@ -213,6 +214,7 @@ class TutorSession:
             return
         self.data["resume_status"] = self.status
         self.data["pause_reason"] = reason
+        self.data["paused_at_epoch"] = time.time()
         self.data["active_seconds"] = self.active_elapsed_seconds()
         self.data["active_since_epoch"] = None
         self.data["status"] = "paused"
@@ -223,6 +225,7 @@ class TutorSession:
             raise SessionError("session is not paused")
         self.data["status"] = self.data.pop("resume_status", "waiting_answer" if self.data.get("current_question") else "asking")
         self.data.pop("pause_reason", None)
+        self.data.pop("paused_at_epoch", None)
         if self.data["status"] == "waiting_answer" and not self.data.get("evidence"):
             # Legacy sessions stored a question but no verdict; keep the question,
             # never invent an answer or a higher objective during migration.
