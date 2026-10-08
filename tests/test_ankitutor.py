@@ -45,7 +45,10 @@ def base_concept():
         "title": "Base Rate / 基础率",
         "core_knowledge": "后验概率必须同时考虑基础率与观测证据的似然。",
         "learning_objective": "能在陌生场景中用自然频率或 Bayes 更新概率。",
+        # Level is the VERIFIED level: the fixture represents a concept whose
+        # L2 was already demonstrated, so every create() passes verified_level.
         "level": "L2",
+        "target_level": "L2",
         "prerequisites": ["probability.conditional"],
         "common_errors": ["inverse_probability"],
         "source_refs": ["forecasting_principles.pdf#page=32"],
@@ -60,7 +63,7 @@ def base_concept():
 # -- AC-01: read existing concept + fields/tags/due ----------------------
 def test_create_and_read_back(svc, base_concept):
     s, c = svc
-    created = s.create(base_concept)
+    created = s.create(base_concept, verified_level=True)
     assert created["note_id"] is not None
     got = s.get("probability.bayes.base_rate")
     assert got["core_knowledge"] == base_concept["core_knowledge"]
@@ -75,7 +78,7 @@ def test_create_and_read_back(svc, base_concept):
 
 def test_due_detection(svc, base_concept):
     s, _ = svc
-    s.create(base_concept)
+    s.create(base_concept, verified_level=True)
     due = s.client.due_concepts()
     assert [d["fields"]["ConceptID"]["value"] for d in due] == ["probability.bayes.base_rate"]
 
@@ -83,14 +86,14 @@ def test_due_detection(svc, base_concept):
 # -- AC-02 / T02: dedupe by ConceptID -------------------------------------
 def test_duplicate_create_blocked(svc, base_concept):
     s, _ = svc
-    s.create(base_concept)
+    s.create(base_concept, verified_level=True)
     with pytest.raises(Exception):
-        s.create(base_concept)
+        s.create(base_concept, verified_level=True)
 
 
 def test_upsert_reuses_concept_merging_refs(svc, base_concept):
     s, _ = svc
-    s.create(base_concept)
+    s.create(base_concept, verified_level=True)
     second = dict(base_concept)
     second["source_refs"] = ["bayes_notes.md#p=3"]
     updated, created = s.upsert(second)
@@ -103,7 +106,7 @@ def test_upsert_reuses_concept_merging_refs(svc, base_concept):
 # -- AC-03 / T05: create/update after learning ----------------------------
 def test_update_bumps_version_and_preserves(svc, base_concept):
     s, _ = svc
-    s.create(base_concept)
+    s.create(base_concept, verified_level=True)
     upd = s.update(dict(base_concept, common_errors=["inverse_probability", "base_rate_neglect"]))
     assert upd["version"] == 2
     assert "base_rate_neglect" in upd["common_errors"]
@@ -112,7 +115,7 @@ def test_update_bumps_version_and_preserves(svc, base_concept):
 # -- AC-06 / T04: grading mapping written back ----------------------------
 def test_grade_maps_to_ease(svc, base_concept, tmp_path):
     s, c = svc
-    s.create(base_concept)
+    s.create(base_concept, verified_level=True)
     cid = s.get("probability.bayes.base_rate")["card_ids"][0]
     p = tmp_path / "active_session.json"
     sess = S.new_session("active_learning", concept={"concept_id": "probability.bayes.base_rate"})
@@ -156,7 +159,7 @@ def test_session_recovery(svc, tmp_path):
 # -- AC-09 / T12: Level not forced through full ladder --------------------
 def test_level_is_verified_max_not_forced(svc, base_concept):
     s, _ = svc
-    s.create(base_concept)  # starts L2
+    s.create(base_concept, verified_level=True)  # starts L2
     # ordinary review passes 1 question at L2, no forced L3
     assert s.get("probability.bayes.base_rate")["level"] == "L2"
     # raise is allowed
@@ -170,7 +173,7 @@ def test_level_is_verified_max_not_forced(svc, base_concept):
 # -- AC-07 / T08: source delete does not delete review history ------------
 def test_delete_protected_after_review(svc, base_concept, tmp_path):
     s, _ = svc
-    s.create(base_concept)
+    s.create(base_concept, verified_level=True)
     p = tmp_path / "active_session.json"
     sess = S.new_session("active_learning", concept={"concept_id": "probability.bayes.base_rate"})
     sess.set_current_question("probability.bayes.base_rate", "Explain base rates", objective="L1")
@@ -183,7 +186,7 @@ def test_delete_protected_after_review(svc, base_concept, tmp_path):
 
 def test_retire_preserves_and_suspends(svc, base_concept):
     s, c = svc
-    s.create(base_concept)
+    s.create(base_concept, verified_level=True)
     cid = s.get("probability.bayes.base_rate")["card_ids"][0]
     s.retire("probability.bayes.base_rate")
     got = s.get("probability.bayes.base_rate")
@@ -193,7 +196,7 @@ def test_retire_preserves_and_suspends(svc, base_concept):
 
 def test_delete_unreviewed_requires_confirm(svc, base_concept):
     s, _ = svc
-    s.create(base_concept)
+    s.create(base_concept, verified_level=True)
     with pytest.raises(Exception):
         s.delete_unreviewed("probability.bayes.base_rate")  # no confirm
     s.delete_unreviewed("probability.bayes.base_rate", confirm=True)
@@ -205,7 +208,7 @@ def test_unreachable_raises_not_fabricates(svc, base_concept):
     s, c = svc
     c.up = False
     with pytest.raises(AnkiConnectUnreachable):
-        s.create(base_concept)
+        s.create(base_concept, verified_level=True)
 
 
 # -- T11: budget enforces max_questions -----------------------------------

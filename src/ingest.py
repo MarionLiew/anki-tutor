@@ -36,32 +36,35 @@ def _now_iso() -> str:
 
 def _parse_pdf(path: Path) -> tuple[str, list[dict]]:
     """PDF -> (text_with_page_breaks, pages). Tries pypdf then pymupdf."""
-    text, pages = "", []
-    try:
-        from pypdf import PdfReader
-        reader = PdfReader(str(path))
-        for i, page in enumerate(reader.pages):
-            t = page.extract_text() or ""
-            text += t + "\n\f\n"
-            if t.strip():
-                pages.append({"page": i + 1, "text": t.strip()})
+    for backend in ("pypdf", "pymupdf"):
+        # Each attempt starts from empty buffers: a backend that fails mid-way
+        # must not leave half its text behind for the next one to append to
+        # (that would duplicate pages in the parsed index).
+        text, pages = "", []
+        try:
+            if backend == "pypdf":
+                from pypdf import PdfReader
+                reader = PdfReader(str(path))
+                for i, page in enumerate(reader.pages):
+                    t = page.extract_text() or ""
+                    text += t + "\n\f\n"
+                    if t.strip():
+                        pages.append({"page": i + 1, "text": t.strip()})
+            else:
+                import fitz  # pymupdf
+                doc = fitz.open(str(path))
+                try:
+                    for i in range(len(doc)):
+                        t = doc[i].get_text()
+                        text += t + "\n\f\n"
+                        if t.strip():
+                            pages.append({"page": i + 1, "text": t.strip()})
+                finally:
+                    doc.close()
+        except Exception:
+            continue  # fall through to the next backend
         if text.strip():
             return text, pages
-    except Exception:
-        pass  # fall through to pymupdf
-    try:
-        import fitz  # pymupdf
-        doc = fitz.open(str(path))
-        for i in range(len(doc)):
-            t = doc[i].get_text()
-            text += t + "\n\f\n"
-            if t.strip():
-                pages.append({"page": i + 1, "text": t.strip()})
-        doc.close()
-        if text.strip():
-            return text, pages
-    except Exception:
-        pass
     raise IngestError(f"could not extract text from PDF: {path}")
 
 
@@ -112,38 +115,51 @@ def chunk_candidates(text: str, pages: list[dict]) -> list[dict]:
 
     Each candidate carries a stable ref key + page. The AI extraction prompt
     later turns these into real ConceptIDs and collapses duplicates.
+
+    Page attribution comes from splitting on the form-feed page separator the
+    parsers write. Do NOT count "\\f" while iterating str.splitlines(): it treats
+    \\f as a line boundary itself, so no line ever contains one and every
+    candidate would silently claim page 1 (Source Library states the origin of
+    every concept, so a wrong page is a wrong citation).
     """
     sections = []
-    page_map = {}
-    for p in pages:
-        page_map.setdefault(p["page"], []).append(p["text"])
-    lines = text.splitlines()
+
+    def _flush(title, lines, page):
+        # A section is only a candidate if it carries text: a bare heading or
+        # the blank line that precedes one is not a concept seed.
+        if any(line.strip() for line in lines):
+            sections.append({"title": title, "text": "\n".join(lines), "page": page})
+
     cur_title, cur_lines, cur_page = None, [], 1
-    for ln in lines:
-        clean = ln.strip()
-        if _MD_HEADING.match(clean):
-            if cur_lines and (cur_title or cur_lines):
-                sections.append({"title": cur_title or "untitled", "text": "\n".join(cur_lines), "page": cur_page})
-            cur_title = _MD_HEADING.sub("", clean)
+    for page_no, page_text in enumerate(text.split("\f"), start=1):
+        if page_no > 1 and cur_lines:
+            # Close the section that ran to the end of the previous page, then
+            # keep the heading (its text continues, credited to the new page).
+            _flush(cur_title, cur_lines, cur_page)
             cur_lines = []
-        else:
+        for ln in page_text.splitlines():
+            clean = ln.strip()
+            if _MD_HEADING.match(clean):
+                _flush(cur_title, cur_lines, cur_page)
+                cur_title, cur_lines, cur_page = _MD_HEADING.sub("", clean), [], page_no
+                continue
+            if not cur_lines:
+                # First content line of this section decides its page, so a
+                # heading-less section is not credited to page 1 by default.
+                cur_page = page_no
             cur_lines.append(ln)
-            if "\f" in ln:
-                cur_page += 1
-                cur_lines = []
-    if cur_lines and (cur_title or cur_lines):
-        sections.append({"title": cur_title or "untitled", "text": "\n".join(cur_lines), "page": cur_page})
+    _flush(cur_title, cur_lines, cur_page)
 
     out = []
     for i, s in enumerate(sections):
         title = s["title"]
         body = s["text"]
-        # Filter junk: empty, pure numbers, tiny fragments
+        # Filter junk: untitled and too short to be a concept seed
         if title is None and len(body.strip()) < 12:
             continue
         out.append({
             "candidate_id": f"cand_{i + 1}",
-            "title": title,
+            "title": title or "untitled",
             "text": body[:600],
             "page": s["page"],
             "ref": _ref_key(title, s["page"]),

@@ -17,7 +17,7 @@ MAX_LOG_BYTES = 1024 * 1024
 MAX_BACKUPS = 2
 KINDS = {"learning_entered", "learning_paused", "learning_resumed", "learning_exited",
          "question_asked", "answer_evaluated", "hint_given", "transfer_checked",
-         "grade_submitted", "mentor_issue"}
+         "grade_submitted", "mentor_issue", "retry_prepared"}
 ISSUES = {"revealed_answer_too_early", "skipped_transfer", "unnecessary_detour",
           "wrong_grading", "changed_topic_too_soon", "other_review_needed"}
 REASONS = {"user_request", "topic_switch", "session_complete", "budget_exhausted", "missing_concept", "interrupted", "unknown"}

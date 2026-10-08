@@ -43,6 +43,7 @@ FIELDS = [
     "CoreKnowledge",
     "LearningObjective",
     "Level",
+    "TargetLevel",
     "Prerequisites",
     "CommonErrors",
     "SourceRefs",
@@ -63,6 +64,10 @@ REQUIRED_FIELDS = [
     "Version",
     "UpdatedAt",
 ]
+
+# Fields added after the first release. `ensure` adds any of these that a
+# pre-existing model is missing, so an old install keeps working unchanged.
+MIGRATABLE_FIELDS = ["TargetLevel"]
 
 CARD_TEMPLATES = [
     {

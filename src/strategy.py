@@ -20,6 +20,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
+# Suggestions only: the user's own goal line is free-form (a candidate that
+# isn't listed here is accepted and drives teaching just the same).
 CANDIDATES = ("alpha", "Polymarket", "gold")
 TTL_DAYS = 30
 ASK_COOLDOWN_DAYS = 7
@@ -31,8 +33,56 @@ def _path() -> Path:
     return Path(os.environ.get("ANKITUTOR_STATE", str(Path(__file__).resolve().parent.parent / "state"))) / "strategy.json"
 
 
+def _asks_path() -> Path:
+    """Where a proactive direction ask is recorded when no goal exists yet.
+
+    The ask predates any strategy record, so it cannot live inside
+    strategy.json: without this sidecar the 7-day cooldown silently never
+    applied and the tutor re-asked on every session.
+    """
+    return _path().with_name("direction_asks.json")
+
+
 def _now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _read_asks() -> dict:
+    path = _asks_path()
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _write_asks(record: dict) -> None:
+    path = _asks_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    name = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=str(path.parent),
+                                         prefix=".asks-", delete=False) as fh:
+            name = fh.name
+            os.fchmod(fh.fileno(), 0o600)
+            json.dump(record, fh, ensure_ascii=False)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(name, path)
+    finally:
+        if name and os.path.exists(name):
+            os.unlink(name)
+
+
+def _valid_candidate(value) -> str:
+    if not isinstance(value, str):
+        raise ValueError("strategy candidate must be a string")
+    value = value.strip()
+    if not value or len(value) > 200 or "\n" in value or "\r" in value:
+        raise ValueError("strategy candidate must be a nonempty single line of at most 200 characters")
+    return value
 
 
 def _read() -> Optional[dict]:
@@ -43,8 +93,9 @@ def _read() -> Optional[dict]:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
         raise ValueError("strategy state is unreadable; refusing to overwrite") from exc
-    if not isinstance(data, dict) or data.get("version") not in (1, 2) or data.get("status") not in ("proposed", "confirmed", "expired") or data.get("candidate") not in CANDIDATES or not isinstance(data.get("revision"), int) or isinstance(data.get("revision"), bool) or data["revision"] < 1:
+    if not isinstance(data, dict) or data.get("version") not in (1, 2) or data.get("status") not in ("proposed", "confirmed", "expired") or not isinstance(data.get("revision"), int) or isinstance(data.get("revision"), bool) or data["revision"] < 1:
         raise ValueError("strategy state is invalid; refusing to overwrite")
+    _valid_candidate(data.get("candidate"))
     if not isinstance(data.get("deliverable") if data.get("version") == 1 else data.get("outcome"), str) or not isinstance(data.get("criterion"), str):
         raise ValueError("strategy outcome is missing; refusing to infer it")
     try:
@@ -63,16 +114,30 @@ def _read() -> Optional[dict]:
 def show() -> dict:
     data = _read()
     if data is None:
+        asks = _read_asks()
+        asked = _latest_asked(asks)
         return {"status": "unconfirmed", "candidate": None, "candidates": list(CANDIDATES),
-                "roadmap": [], "should_ask_direction": True}
+                "asked_at": asked, "roadmap": [], "should_ask_direction": _should_ask({"asked_at": asked})}
     result = _v2(dict(data))
+    result["asked_at"] = _latest_asked(data)
     result["due_for_review"] = data["status"] == "confirmed" and _now() >= datetime.fromisoformat(data["review_due_at"])
-    result["should_ask_direction"] = (data["status"] != "confirmed" and _should_ask(data))
+    result["should_ask_direction"] = (data["status"] != "confirmed" and _should_ask(result))
     if result["due_for_review"]:
         # Monthly full review: outcome/goal still right? Mention once, do not nag.
         result["review_note"] = ("monthly goal review is due: confirm the outcome still fits "
                                  "or run strategy revise --revision N")
     return result
+
+
+def _latest_asked(data: dict) -> str | None:
+    """The most recent proactive ask, from the strategy record or the sidecar."""
+    stamps = []
+    for value in (data.get("asked_at"), _read_asks().get("asked_at")):
+        try:
+            stamps.append(datetime.fromisoformat(value))
+        except (TypeError, ValueError):
+            continue
+    return max(stamps).isoformat() if stamps else None
 
 
 def _v2(result: dict) -> dict:
@@ -96,20 +161,25 @@ def _should_ask(data: dict) -> bool:
         return True
 
 
-def mark_asked(because: str | None = None) -> dict | None:
+def mark_asked(because: str | None = None) -> dict:
     """Record that the tutor proactively asked the user for direction.
 
     because: what prompted the ask — 'cron_delivery', 'session_opening' or
     'review_due'. Recorded in asked_reason for the monthly review, so the
     ask isn't a silently writable side effect.
+
+    With no strategy record yet (the usual case — that is exactly when the
+    tutor asks) the timestamp goes to the sidecar so the cooldown still holds.
     """
     prompts = {"cron_delivery", "session_opening", "review_due"}
     if because not in prompts:
         raise ValueError("ask reason must be one of " + ", ".join(sorted(prompts)))
+    asked_at = _now().isoformat()
     data = _read()
     if data is None:
-        return None
-    data["asked_at"] = _now().isoformat()
+        _write_asks({"asked_at": asked_at, "asked_reason": because})
+        return show()
+    data["asked_at"] = asked_at
     data["asked_reason"] = because
     _write(data)
     return show()
@@ -158,8 +228,7 @@ def _outcome(candidate: str, outcome: str, criterion: str, previous: dict | None
 
 
 def propose(candidate: str, outcome: str = "", criterion: str = "") -> dict:
-    if candidate not in CANDIDATES:
-        raise ValueError("candidate must be alpha, Polymarket, or gold")
+    candidate = _valid_candidate(candidate)
     previous = _read()
     if previous and previous["status"] != "expired":
         raise ValueError("existing strategy: use revise or expire first")
@@ -178,16 +247,17 @@ def confirm(revision: int) -> dict:
 
 
 def revise(candidate: str, revision: int, outcome: str = "", criterion: str = "") -> dict:
-    if candidate not in CANDIDATES:
-        raise ValueError("candidate must be alpha, Polymarket, or gold")
+    candidate = _valid_candidate(candidate)
     data = _read()
     if not data or data["status"] == "expired" or data["revision"] != revision:
         raise ValueError("revision requires current non-expired strategy revision")
     previous = data
     update = _outcome(candidate, outcome, criterion, previous, status="proposed")
     update["asked_at"] = data.get("asked_at")
-    # Roadmap content survives a terminology-only revision so evidence is not lost.
-    if previous.get("roadmap"):
+    # Roadmap content survives a terminology-only revision of the SAME goal so
+    # evidence is not lost — but evidence for one goal is never inherited by a
+    # different one (capability proof does not transfer between outcomes).
+    if previous.get("roadmap") and previous.get("candidate") == candidate:
         update["roadmap"] = previous["roadmap"]
     return _write(update)
 

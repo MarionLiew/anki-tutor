@@ -14,7 +14,7 @@ import json
 def _def_fields():
     return {
         "ConceptID": "", "Title": "", "CoreKnowledge": "", "LearningObjective": "",
-        "Level": "L0", "Prerequisites": "[]", "CommonErrors": "[]",
+        "Level": "L0", "TargetLevel": "L0", "Prerequisites": "[]", "CommonErrors": "[]",
         "SourceRefs": "[]", "SourceHash": "", "Status": "active",
         "TutorInstruction": "", "Version": "1", "UpdatedAt": "",
     }
@@ -29,6 +29,7 @@ class MockAnkiClient:
         self._notes = {}      # note_id -> {fields, tags, model, deck}
         self._cards = {}      # card_id -> {note, deck, queue, type, reps, due}
         self._next_note = 1000
+        self._reviews = {}
         self.up = True
 
     # -- health ------------------------------------------------------------
@@ -57,6 +58,13 @@ class MockAnkiClient:
         if model not in self.models:
             self.models.append(model)
         return model
+
+    def model_field_names(self, model="AdaptiveConcept"):
+        return list(_def_fields().keys())
+
+    def add_model_fields(self, model="AdaptiveConcept", fields=None):
+        """In-memory mirror: the mock model always has the full field set."""
+        return []
 
     # -- notes -------------------------------------------------------------
     def add_note(self, fields, tags=None, deck="AnkiTutor::Concepts",
@@ -102,7 +110,7 @@ class MockAnkiClient:
                     if nf.get("ConceptID") != val:
                         break
                 if part.startswith('tag:'):
-                    val = part.split(':')[1]
+                    val = part.split(':', 1)[1]
                     if not any(tag == val for tag in n["tags"]):
                         break
             else:
@@ -122,14 +130,26 @@ class MockAnkiClient:
         return out
 
     def find_concept(self, concept_id, deck="AnkiTutor::Concepts"):
+        """Mirror AnkiClient.find_concept: exact id only, never a fallback note."""
+        from anki_client import ConceptIDConflict
         ids = self.find_notes(f'deck:"{deck}" ConceptID:"{concept_id}"')
         if not ids:
             return None
         notes = self.notes_info(ids)
-        for n in notes:
-            if (n.get("fields", {}).get("ConceptID", {}).get("value", "") or "").strip() == concept_id:
-                return n
-        return notes[0] if notes else None
+        exact = [n for n in notes
+                 if (n.get("fields", {}).get("ConceptID", {}).get("value", "") or "").strip() == concept_id]
+        if not exact:
+            near = [(n.get("fields", {}).get("ConceptID", {}).get("value", "") or "").strip()
+                    for n in notes
+                    if (n.get("fields", {}).get("ConceptID", {}).get("value", "") or "").strip().casefold()
+                    == concept_id.casefold()]
+            if near:
+                raise ConceptIDConflict(
+                    f"'{concept_id}' is not the stored spelling of {near}; use the exact ConceptID")
+            return None
+        if len(exact) > 1:
+            raise ConceptIDConflict(f"ConceptID '{concept_id}' matches {len(exact)} notes")
+        return exact[0]
 
     def update_note_fields(self, note_id, fields):
         if note_id not in self._notes:
@@ -212,6 +232,7 @@ class MockAnkiClient:
         if card_id not in self._cards:
             raise Exception("card not found")
         self._cards[card_id]["reps"] += 1
+        self._reviews.setdefault(card_id, []).append({"id": self._cards[card_id]["reps"], "ease": ease})
         if ease == 1:
             self._cards[card_id]["queue"] = 1  # learning
             self._cards[card_id]["due"] = 1
@@ -223,6 +244,10 @@ class MockAnkiClient:
         for cid in card_ids:
             if cid in self._cards:
                 self._cards[cid]["queue"] = -1
+
+    def review_history(self, card_id):
+        return [dict(r) for r in self._reviews.get(card_id, [])]
+
 
     def unsuspend_cards(self, card_ids):
         for cid in card_ids:

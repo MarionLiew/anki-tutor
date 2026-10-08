@@ -91,8 +91,9 @@ def test_budget_blocks_registration_before_increment(tmp_path):
 def test_grade_requires_persisted_evidence_and_is_once_only(tmp_path):
     s, path = setup_session(tmp_path)
     client = Mock()
+    client.review_history.side_effect = [[], [{"id": 1, "ease": 3}]]
     svc = ConceptService(client)
-    svc.get = Mock(return_value={"card_ids": [42]})
+    svc.get = Mock(return_value={"card_ids": [42], "note_id": 24})
     with pytest.raises(SessionError):
         svc.grade("topic.concept", 3, path=path)
     with pytest.raises(SessionError):
@@ -108,9 +109,10 @@ def test_grade_requires_persisted_evidence_and_is_once_only(tmp_path):
 def test_uncertain_remote_result_is_not_retried(tmp_path):
     s, path = setup_session(tmp_path)
     client = Mock()
+    client.review_history.side_effect = [[], [{"id": 1, "ease": 3}]]
     client.grade_card.side_effect = TimeoutError("unknown remote outcome")
     svc = ConceptService(client)
-    svc.get = Mock(return_value={"card_ids": [42]})
+    svc.get = Mock(return_value={"card_ids": [42], "note_id": 24})
     with pytest.raises(TimeoutError):
         svc.grade("topic.concept", 3, session=s, path=path)
     assert load_session(path).data["grade_state"] == "pending"

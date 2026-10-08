@@ -26,7 +26,13 @@ from config import (
     VALID_STATUS,
 )
 
-_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_]*(\.[a-z0-9][a-z0-9_]*)+$")
+_ID_SEGMENT = r"[a-z0-9\u4e00-\u9fff][a-z0-9_\u4e00-\u9fff]*"
+# Same alphabet as _slug(): an ID built by make_concept_id() must always pass
+# validate_concept(), which it did not while CJK was rejected here but kept there.
+_ID_RE = re.compile(rf"^{_ID_SEGMENT}(\.{_ID_SEGMENT})+$")
+
+# Tag namespaces this service owns. Any other tag on a note is left alone.
+_MANAGED_TAG_PREFIXES = ("topic::", "domain::", "source::", "origin::", "error::", "level::")
 
 
 class ConceptError(ValueError):
@@ -75,6 +81,9 @@ def validate_concept(concept: dict) -> list[str]:
     level = (concept.get("level") or concept.get("Level") or "").strip()
     if level not in LEVELS:
         problems.append(f"Level '{level}' must be one of {LEVELS}")
+    target = (concept.get("target_level") or concept.get("TargetLevel") or "").strip()
+    if target and target not in LEVELS:
+        problems.append(f"TargetLevel '{target}' must be one of {LEVELS}")
     status = (concept.get("status") or concept.get("Status") or "").strip()
     if status not in VALID_STATUS:
         problems.append(f"Status '{status}' must be one of {sorted(VALID_STATUS)}")
@@ -104,12 +113,17 @@ def concept_to_note_fields(concept: dict) -> dict:
     prerequisites = _as_list(concept.get("prerequisites"))
     errors = _as_list(concept.get("common_errors"))
     sources = _as_list(concept.get("source_refs"))
+    level = concept.get("level", "L0")
     return {
         "ConceptID": concept["concept_id"],
         "Title": concept.get("title", ""),
         "CoreKnowledge": concept.get("core_knowledge", ""),
         "LearningObjective": concept.get("learning_objective", ""),
-        "Level": concept.get("level", "L0"),
+        # Level = highest INDEPENDENTLY VERIFIED ability. TargetLevel = what the
+        # teaching currently aims at. Legacy records have no TargetLevel, so it
+        # falls back to Level — same meaning they had before the split.
+        "Level": level,
+        "TargetLevel": concept.get("target_level") or level,
         "Prerequisites": json.dumps(prerequisites, ensure_ascii=False),
         "CommonErrors": json.dumps(errors, ensure_ascii=False),
         "SourceRefs": json.dumps(sources, ensure_ascii=False),
@@ -134,6 +148,9 @@ def note_to_concept(note: dict) -> dict:
         "core_knowledge": f.get("CoreKnowledge", ""),
         "learning_objective": f.get("LearningObjective", ""),
         "level": (f.get("Level") or "L0").strip(),
+        # A note written before TargetLevel existed keeps its old behaviour:
+        # its Level was the level teaching aimed at.
+        "target_level": (f.get("TargetLevel") or f.get("Level") or "L0").strip(),
         "prerequisites": _as_list(f.get("Prerequisites")),
         "common_errors": _as_list(f.get("CommonErrors")),
         "source_refs": _as_list(f.get("SourceRefs")),
@@ -185,7 +202,7 @@ class ConceptService:
         return concept
 
     def search(self, topic: str | None = None, level: str | None = None,
-               status: str | None = None) -> list[dict]:
+               status: str | None = None, query: str | None = None) -> list[dict]:
         """Lightweight search used by 查看掌握情况."""
         q = [f'deck:"{self.deck}"']
         if topic:
@@ -197,18 +214,64 @@ class ConceptService:
         out = []
         for n in notes:
             c = note_to_concept(n)
+            if query and query.casefold() not in " ".join(
+                str(c.get(k, "")) for k in ("concept_id", "title", "core_knowledge", "learning_objective")
+            ).casefold():
+                continue
             if status and c["status"] != status:
                 continue
             out.append(c)
         return out
 
+    # -- tags ---------------------------------------------------------------
+    def _replace_managed_tags(self, note_id: int, old_tags: list[str], concept: dict) -> list[str]:
+        """Bring the note's managed tags in line with the concept.
+
+        Tags are replaced, not only accumulated: a changed topic, a raised
+        level or a dropped error model must stop matching tag:: searches,
+        otherwise search() reports a classification the concept no longer has.
+
+        Only tags the concept can speak for are dropped. Classification tags
+        (topic/domain/source/origin) live on the note, not in the fields, so
+        they are removed only when the caller actually supplied that key —
+        otherwise a later level change would silently strip a concept's topic.
+        """
+        new_tags = concept_tags(concept)
+        stale = []
+        for tag in (old_tags or []):
+            namespace = tag.split("::", 1)[0] + "::"
+            if namespace not in _MANAGED_TAG_PREFIXES or tag in new_tags:
+                continue
+            key = namespace[:-2]
+            if key in ("level", "error") or key in concept:
+                stale.append(tag)
+        if stale:
+            self.client.remove_tags([note_id], stale)
+        self.client.add_tags([note_id], new_tags)
+        return new_tags
+
     # -- create / update ---------------------------------------------------
-    def create(self, concept: dict) -> dict:
+    def create(self, concept: dict, verified_level: bool = False) -> dict:
+        """Create a new concept note.
+
+        `level` is the VERIFIED level, so a brand-new concept may only be L0
+        unless verified_level=True states the learner already demonstrated it
+        independently; use `target_level` for what teaching aims at (doc §5).
+        """
         concept = dict(concept)
         concept["concept_id"] = normalize_concept_id(concept.get("concept_id") or "")
+        concept.setdefault("level", "L0")
+        concept.setdefault("status", STATUS_ACTIVE)
         problems = validate_concept(concept)
         if problems:
             raise ConceptError("; ".join(problems))
+        level = (concept.get("level") or "L0").strip()
+        if level != "L0" and not verified_level:
+            raise ConceptError(
+                f"Level '{level}' means independently VERIFIED ability, and a new concept has no evidence yet — "
+                "create it with level L0 plus target_level, or pass verified_level=True when the learner has "
+                "already demonstrated that level"
+            )
 
         existing = self.get(concept["concept_id"])
         if existing:
@@ -245,17 +308,35 @@ class ConceptService:
                 changes[k] = {"added": sorted(b - a), "removed": sorted(a - b)}
         return changes
 
-    def update(self, concept: dict, bump_version: bool = True, merge_lists: bool = True) -> dict:
+    def update(self, concept: dict, bump_version: bool = True, merge_lists: bool = True,
+               verified_level: bool = False) -> dict:
         """Update an existing note in place. Never deletes a note.
 
         merge_lists=True unions SourceRefs/CommonErrors/Prerequisites so we
         accumulate evidence instead of clobbering it during diff (§6.3).
+
+        Level only moves through set_level() or verified_level=True: an
+        incidental update must not claim the learner reached a higher level.
         """
         concept = dict(concept)
         cid = normalize_concept_id(concept.get("concept_id") or "")
         existing = self.get(cid)
         if not existing:
             raise ConceptError(f"ConceptID '{cid}' not found — use create()")
+
+        incoming_level = (concept.get("level") or "").strip()
+        existing_level = (existing.get("level") or "L0").strip()
+        if incoming_level and incoming_level != existing_level:
+            if not verified_level:
+                raise ConceptError(
+                    f"refusing to move Level {existing_level} -> {incoming_level} on update: Level records "
+                    "independently verified ability — use set_level() after the learner demonstrated it, "
+                    "or target_level for what teaching aims at"
+                )
+            if LEVELS.index(incoming_level) < LEVELS.index(existing_level):
+                raise ConceptError(
+                    f"refusing to lower Level {existing_level} -> {incoming_level} without explicit user instruction"
+                )
 
         merged = dict(existing)
         merged.update({k: v for k, v in concept.items() if v not in (None, "")})
@@ -271,20 +352,20 @@ class ConceptService:
         if problems:
             raise ConceptError("; ".join(problems))
 
-        self.client.update_note_fields(existing["note_id"], concept_to_note_fields(merged))
-        # keep tags in sync (topic/level/error tags may have changed)
-        self.client.add_tags([existing["note_id"]], concept_tags(merged))
-        merged["note_id"] = existing["note_id"]
-        merged["card_ids"] = existing.get("card_ids") or self.client.cards_of_note(existing["note_id"])
+        note_id = existing["note_id"]
+        self.client.update_note_fields(note_id, concept_to_note_fields(merged))
+        merged["tags"] = self._replace_managed_tags(note_id, existing.get("tags") or [], merged)
+        merged["note_id"] = note_id
+        merged["card_ids"] = existing.get("card_ids") or self.client.cards_of_note(note_id)
         return merged
 
-    def upsert(self, concept: dict) -> tuple[dict, bool]:
+    def upsert(self, concept: dict, verified_level: bool = False) -> tuple[dict, bool]:
         """Create or update. Returns (concept, created_bool)."""
         cid = normalize_concept_id(concept.get("concept_id") or "")
         existing = self.get(cid)
         if existing:
-            return self.update(concept), False
-        return self.create(concept), True
+            return self.update(concept, verified_level=verified_level), False
+        return self.create(concept, verified_level=verified_level), True
 
     # -- lifecycle ---------------------------------------------------------
     def suspend(self, concept_id: str) -> dict:
@@ -376,13 +457,37 @@ class ConceptService:
             raise ConceptError(f"ConceptID '{concept_id}' not found")
         if len(c["card_ids"]) != 1:
             raise ConceptError("expected exactly one concept card; refusing partial multi-card grading")
+        card_id = c["card_ids"][0]
+        before = self.client.review_history(card_id)
+        session.data["grade_submission"] = {"card_id": card_id, "note_id": c["note_id"],
+            "concept_id": concept_id, "ease": ease, "before": before, "submitted_at": now_iso()}
         session.data["grade_state"] = "pending"
         session.save(path)
-        self.client.grade_card(c["card_ids"][0], ease)
+        self.client.grade_card(card_id, ease)
+        self.reconcile_grade(session, path)
+        return c
+
+    def reconcile_grade(self, session, path) -> dict:
+        """Read-only reconciliation; never resubmit an uncertain review."""
+        from session import SessionError
+        if session.data.get("grade_state") != "pending":
+            raise SessionError("no pending grade")
+        submission = session.data.get("grade_submission")
+        if not submission:
+            raise SessionError("legacy pending lacks baseline; manual Anki audit required, no retry")
+        concept = self.get(submission["concept_id"])
+        if not concept or concept["note_id"] != submission["note_id"] or concept["card_ids"] != [submission["card_id"]]:
+            raise SessionError("pending target identity changed; manual audit required")
+        after = self.client.review_history(submission["card_id"])
+        before_ids = {r["id"] for r in submission["before"]}
+        new = [r for r in after if r["id"] not in before_ids]
+        if not all(r in after for r in submission["before"]) or len(new) != 1 or int(new[0].get("ease", 0)) != submission["ease"]:
+            raise SessionError("pending revlog absent/ambiguous/mismatched; preserved, blind retry refused")
+        session.data["grade_receipt"] = {"card_id": submission["card_id"], "review": new[0], "verified_at": now_iso()}
         session.data["grade_state"] = "completed"
         session.status = "graded"
         session.save(path)
-        return c
+        return session.data["grade_receipt"]
 
     def record_error(self, concept_id: str, error_type: str) -> dict:
         """Persist a STABLE error model into CommonErrors (§11.1)."""
@@ -392,11 +497,15 @@ class ConceptService:
         c["common_errors"] = sorted(set(_as_list(c.get("common_errors"))) | {error_type})
         c["updated_at"] = now_iso()
         self.client.update_note_fields(c["note_id"], concept_to_note_fields(c))
-        self.client.add_tags([c["note_id"]], [f"error::{_slug(error_type)}"])
+        self._replace_managed_tags(c["note_id"], c.get("tags") or [], c)
         return c
 
     def set_level(self, concept_id: str, level: str) -> dict:
-        """Raise (never silently lower) the validated mastery level."""
+        """Record a higher VERIFIED level (never silently lower it).
+
+        Only call this after the learner demonstrated the level independently;
+        the level teaching aims at lives in target_level and is free to change.
+        """
         if level not in LEVELS:
             raise ConceptError(f"level must be one of {LEVELS}")
         c = self.get(concept_id)
@@ -409,6 +518,23 @@ class ConceptService:
         c["level"] = level
         c["updated_at"] = now_iso()
         self.client.update_note_fields(c["note_id"], concept_to_note_fields(c))
+        c["tags"] = self._replace_managed_tags(c["note_id"], c.get("tags") or [], c)
+        return c
+
+    def set_target_level(self, concept_id: str, target_level: str) -> dict:
+        """Set the level teaching aims at — a plan, not evidence of mastery.
+
+        Falls back to the verified Level when a legacy note has no TargetLevel.
+        """
+        if target_level not in LEVELS:
+            raise ConceptError(f"target level must be one of {LEVELS}")
+        c = self.get(concept_id)
+        if not c:
+            raise ConceptError(f"ConceptID '{concept_id}' not found")
+        c["target_level"] = target_level
+        c["updated_at"] = now_iso()
+        self.client.update_note_fields(c["note_id"], concept_to_note_fields(c))
+        c["tags"] = self._replace_managed_tags(c["note_id"], c.get("tags") or [], c)
         return c
 
 

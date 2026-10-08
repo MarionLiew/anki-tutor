@@ -54,8 +54,9 @@ def test_cli_full_flow_with_mocked_anki(tmp_path, monkeypatch, capsys):
     import cli
     monkeypatch.setenv("ANKITUTOR_STATE", str(tmp_path))
     client = Mock()
+    client.review_history.side_effect = [[], [{"id": 1, "ease": 1}]]
     monkeypatch.setattr(cli, "AnkiClient", lambda: client)
-    monkeypatch.setattr(cli.ConceptService, "get", lambda self, cid: {"card_ids": [42]})
+    monkeypatch.setattr(cli.ConceptService, "get", lambda self, cid: {"card_ids": [42], "note_id": 24})
     _, goal = call(capsys, ["strategy", "show"])
     assert goal["status"] == "unconfirmed"
     assert call(capsys, ["grade", "topic.mde", "3"])[0] == 1

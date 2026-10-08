@@ -14,8 +14,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from config import DECK, LIBRARY_DIR, MODEL, ensure_dirs  # noqa: E402
-from anki_client import AnkiClient, AnkiConnectUnreachable  # noqa: E402
+from config import DECK, LEVELS, LIBRARY_DIR, MODEL, MIGRATABLE_FIELDS, ensure_dirs  # noqa: E402
+from anki_client import AnkiClient, AnkiConnectUnreachable, AnkiConnectError  # noqa: E402
 from concept_service import ConceptService, ConceptError  # noqa: E402
 from events import log_event  # noqa: E402
 from ingest import IngestError, IngestService  # noqa: E402
@@ -36,6 +36,7 @@ def main(argv: list[str] | None = None) -> int:
     pg = sub.add_parser("get"); pg.add_argument("concept_id")
     pl = sub.add_parser("due"); pl.add_argument("--limit", type=int, default=3)
     pd = sub.add_parser("search"); pd.add_argument("--topic", default=None); pd.add_argument("--level", default=None)
+    pd.add_argument("query", nargs="?", default=None, help="literal free-text concept search")
     pgc = sub.add_parser("grade"); pgc.add_argument("concept_id"); pgc.add_argument("ease", type=int, choices=[1, 2, 3, 4])
     pr = sub.add_parser("retire"); pr.add_argument("concept_id"); pr.add_argument("--reason", default="")
     pm = sub.add_parser("merge"); pm.add_argument("source_id"); pm.add_argument("canonical_id")
@@ -47,12 +48,46 @@ def main(argv: list[str] | None = None) -> int:
     pn.add_argument("--extension", default="same_concept", choices=["same_concept", "new_concept"])
     pn.add_argument("--budget-exhausted", action="store_true")
     pn.add_argument("--transfer-first-failed", action="store_true")
+    pn.add_argument("--hints-used", action="store_true", help="any hint was needed (forces Again)")
+    pn.add_argument("--objective", default="L1", choices=LEVELS)
+
+    pcon = sub.add_parser("concept", help="create/update the concept notes the tutor teaches")
+
+    def _concept_fields(sp, creating: bool):
+        # Title/CoreKnowledge/LearningObjective are validated by the service
+        # (which also accepts them from --json), so they are not argparse-required.
+        sp.add_argument("--id", dest="concept_id", required=True)
+        sp.add_argument("--title", required=False)
+        sp.add_argument("--core", required=False, help="core knowledge: the principle and its boundary")
+        sp.add_argument("--objective", required=False, help="learning objective + how it is judged")
+        sp.add_argument("--level", choices=LEVELS, default=None, help="VERIFIED level (default L0)")
+        sp.add_argument("--target-level", choices=LEVELS, default=None, help="level teaching aims at")
+        sp.add_argument("--error", action="append", default=[], help="stable error model (repeatable)")
+        sp.add_argument("--prereq", action="append", default=[])
+        sp.add_argument("--source-ref", action="append", default=[], help="library ref, e.g. p12:bayes")
+        sp.add_argument("--source-hash", default="")
+        sp.add_argument("--domain", default="")
+        sp.add_argument("--topic", default="")
+        sp.add_argument("--tutor-instruction", default="")
+        sp.add_argument("--verified", action="store_true",
+                        help="the learner already demonstrated --level independently (else Level stays L0)")
+        sp.add_argument("--json", dest="json_path", default=None,
+                        help="concept object as JSON (file path, or - for stdin); flags override it")
+
+    cact = pcon.add_subparsers(dest="concept_action", required=True)
+    for action in ("create", "update", "upsert"):
+        _concept_fields(cact.add_parser(action), creating=(action == "create"))
+    cerr = cact.add_parser("error"); cerr.add_argument("--id", dest="concept_id", required=True); cerr.add_argument("--type", required=True)
+    clv = cact.add_parser("level")
+    clv.add_argument("--id", dest="concept_id", required=True)
+    clv.add_argument("--verified", choices=LEVELS, help="record a higher verified level (evidence-backed)")
+    clv.add_argument("--target", choices=LEVELS, help="set the level teaching aims at (a plan)")
 
     ps = sub.add_parser("strategy", help="explicit strategic goal profile (no inference)")
     actions = ps.add_subparsers(dest="strategy_action", required=True)
     for action in ("propose", "revise"):
         sp = actions.add_parser(action)
-        sp.add_argument("candidate", choices=strategy.CANDIDATES)
+        sp.add_argument("candidate", help="the user's own goal line (alpha / Polymarket / gold are examples only)")
         sp.add_argument("--outcome", required=True, help="the end result the user wants")
         sp.add_argument("--criterion", required=True, help="how the user will know it is done")
         if action == "revise":
@@ -88,7 +123,12 @@ def main(argv: list[str] | None = None) -> int:
     answer = steps.add_parser("answer")
     answer.add_argument("verdict", choices=["correct", "partial", "wrong"])
     answer.add_argument("--hinted", action="store_true")
+    answer.add_argument("--rubric", help="JSON list of criterion/met/evidence items")
+    answer.add_argument("--answer-text", default="")
+    answer.add_argument("--spontaneous", action="store_true")
     hint = steps.add_parser("hint"); hint.add_argument("--level", type=int, default=1)
+    hint.add_argument("--sent-at", help="actual delivery ISO timestamp; omit to prepare retry without counting hint")
+    steps.add_parser("reconcile")
     pause = steps.add_parser("pause")
     pause.add_argument("--reason", choices=["user_request", "topic_switch", "interrupted"], default="user_request")
     close = steps.add_parser("close")
@@ -110,7 +150,7 @@ def main(argv: list[str] | None = None) -> int:
     except AnkiConnectUnreachable as e:
         print(json.dumps({"ok": False, "unreachable": True, "error": str(e)}))
         return 2
-    except (ConceptError, IngestError, SessionError, ValueError) as e:
+    except (ConceptError, IngestError, SessionError, ValueError, AnkiConnectError) as e:
         print(json.dumps({"ok": False, "error": str(e)}), file=sys.stderr)
         return 1
 
@@ -152,7 +192,7 @@ def _observe_dispatch(args) -> int:
         return 0
     summary = observation.report(_observation_path())
     goal = strategy.show()
-    summary["goal"] = {k: goal.get(k) for k in ("status", "candidate", "deliverable", "criterion", "due_for_review", "revision")}
+    summary["goal"] = {k: goal.get(k) for k in ("status", "candidate", "outcome", "criterion", "due_for_review", "revision")}
     summary["active_session"] = ({"session_id": s.session_id, "status": s.status,
         "concept_id": s.current_concept, "questions_used": s.questions_used,
         "task": s.data.get("task"), "bottleneck": s.data.get("bottleneck"),
@@ -246,19 +286,33 @@ def _session_dispatch(args) -> int:
             _note("question_asked", session_id=s.session_id, concept_id=args.concept_id,
                   objective=args.objective)
         elif action == "answer":
-            s.record_answer(args.verdict, hinted=args.hinted)
+            s.record_answer(args.verdict, hinted=args.hinted,
+                rubric=json.loads(args.rubric) if args.rubric else None,
+                answer_text=args.answer_text, spontaneous=args.spontaneous)
             s.save(path)
             _note("answer_evaluated", session_id=s.session_id, concept_id=s.current_concept,
                   verdict=args.verdict, hinted=bool(s.hint_level or args.hinted))
             if s.data.get("is_transfer_question"):
+                transfer = "passed" if args.verdict == "correct" and not s.hint_level and not args.hinted else (
+                    "assisted_correct" if args.verdict == "correct" else "failed")
                 _note("transfer_checked", session_id=s.session_id, concept_id=s.current_concept,
-                      transfer="passed" if args.verdict == "correct" and not s.hint_level and not args.hinted else "failed")
+                      transfer=transfer)
         elif action == "hint":
-            if s.status != "answer_received":
+            if s.status != "answer_received" and not (args.sent_at and s.status == "waiting_answer" and not s.hint_level):
                 raise SessionError("hint only after evaluated answer")
-            s.advance_attempt(args.level)
+            if args.sent_at:
+                from datetime import datetime, timezone
+                sent = datetime.fromisoformat(args.sent_at)
+                if sent.tzinfo is None or sent > datetime.now(timezone.utc):
+                    raise SessionError("hint delivery timestamp must be timezone-aware and not future")
+                s.data["hint_sent_at"] = args.sent_at
+            else:
+                s.data.pop("hint_sent_at", None)
+            s.advance_attempt(args.level if args.sent_at else 0)
             s.save(path)
-            _note("hint_given", session_id=s.session_id, concept_id=s.current_concept)
+            _note("hint_given" if args.sent_at else "retry_prepared", session_id=s.session_id, concept_id=s.current_concept)
+        elif action == "reconcile":
+            ConceptService(AnkiClient()).reconcile_grade(s, path)
         elif action == "time":
             if args.seconds < 0 or s.status == "paused":
                 raise SessionError("nonnegative measured time requires an active session")
@@ -273,6 +327,14 @@ def _session_dispatch(args) -> int:
                 raise SessionError("concept exists; missing_concept recovery refused")
             if s.status not in ("graded", "paused") and args.reason not in ("missing_concept", "budget_exhausted", "user_request"):
                 raise SessionError("ungraded active session: pause instead of closing")
+            if s.data.get("grade_state") == "pending" and args.reason != "missing_concept":
+                # A pending grade may or may not have reached Anki. Closing here
+                # would drop the marker and let the same concept be graded again,
+                # writing a second review — reconcile first (doc §11).
+                raise SessionError(
+                    "grade submission outcome is uncertain (pending): check Anki before closing, "
+                    "or close with --reason missing_concept once the concept is verified absent"
+                )
             archive = path.parent / "closed_sessions" / (s.session_id + ".json")
             s.data["closure_reason"] = args.reason
             s.data["closure_outcome"] = "graded" if s.data.get("grade_state") == "completed" else "ungraded_no_mastery_claim"
@@ -288,6 +350,89 @@ def _session_dispatch(args) -> int:
         decision = s.closure_decision(budget_exhausted=not s.can_continue())
         result["decision"] = {"action": decision.action, "grade": decision.grade}
     print(json.dumps(result, ensure_ascii=False))
+    return 0
+
+
+_CONCEPT_SCALARS = {
+    "title": "title",
+    "core": "core_knowledge",
+    "objective": "learning_objective",
+    "level": "level",
+    "target_level": "target_level",
+    "source_hash": "source_hash",
+    "domain": "domain",
+    "topic": "topic",
+    "tutor_instruction": "tutor_instruction",
+}
+_CONCEPT_LISTS = {
+    "error": "common_errors",
+    "prereq": "prerequisites",
+    "source_ref": "source_refs",
+}
+
+
+def _concept_from_args(args) -> dict:
+    """Build a concept dict from CLI flags, with an optional JSON base.
+
+    Flags win over the JSON payload so a caller can override one field of a
+    full record without rewriting it.
+    """
+    data: dict = {}
+    if getattr(args, "json_path", None):
+        raw = sys.stdin.read() if args.json_path == "-" else Path(args.json_path).read_text(encoding="utf-8")
+        try:
+            data = json.loads(raw)
+        except (OSError, ValueError) as e:
+            raise ConceptError(f"--json is not a readable JSON object: {e}") from e
+        if not isinstance(data, dict):
+            raise ConceptError("--json must contain a JSON object")
+    for flag, key in _CONCEPT_SCALARS.items():
+        value = getattr(args, flag, None)
+        if value:
+            data[key] = value
+    for flag, key in _CONCEPT_LISTS.items():
+        values = getattr(args, flag, None) or []
+        if values:
+            existing = data.get(key) or []
+            if isinstance(existing, str):
+                existing = [p.strip() for p in existing.split(",") if p.strip()]
+            data[key] = list(existing) + list(values)
+    concept_id = (getattr(args, "concept_id", None) or data.get("concept_id") or "").strip()
+    if not concept_id:
+        raise ConceptError("--id is required")
+    data["concept_id"] = concept_id
+    return data
+
+
+def _concept_dispatch(args, svc: ConceptService) -> int:
+    action = args.concept_action
+    if action == "error":
+        c = svc.record_error(args.concept_id, args.type)
+        log_event("concept_error_recorded", concept_id=args.concept_id, error_type=args.type)
+        print(json.dumps({"ok": True, "concept": c}, ensure_ascii=False))
+        return 0
+    if action == "level":
+        if bool(args.verified) == bool(args.target):
+            raise ConceptError("pass exactly one of --verified <level> or --target <level>")
+        if args.verified:
+            c = svc.set_level(args.concept_id, args.verified)
+            log_event("concept_level_verified", concept_id=args.concept_id, level=args.verified)
+        else:
+            c = svc.set_target_level(args.concept_id, args.target)
+            log_event("concept_target_level", concept_id=args.concept_id, target_level=args.target)
+        print(json.dumps({"ok": True, "concept": c}, ensure_ascii=False))
+        return 0
+    concept = _concept_from_args(args)
+    if action == "create":
+        result = svc.create(concept, verified_level=args.verified)
+        created = True
+    elif action == "update":
+        result = svc.update(concept, verified_level=args.verified)
+        created = False
+    else:
+        result, created = svc.upsert(concept, verified_level=args.verified)
+    log_event(f"concept_{action}", concept_id=result["concept_id"], note_id=result.get("note_id"))
+    print(json.dumps({"ok": True, "created": created, "concept": result}, ensure_ascii=False))
     return 0
 
 
@@ -324,7 +469,8 @@ def _dispatch(args) -> int:
     if args.cmd == "next":
         d = decide_next(args.first, args.latest, args.transfer,
                         extension=args.extension, budget_exhausted=args.budget_exhausted,
-                        transfer_first_failed=args.transfer_first_failed)
+                        transfer_first_failed=args.transfer_first_failed,
+                        hints_used=args.hints_used, objective=args.objective)
         print(json.dumps({"action": d.action, "grade": d.grade}))
         return 0
     client = AnkiClient()
@@ -336,11 +482,18 @@ def _dispatch(args) -> int:
     if args.cmd == "ensure":
         deck = client.ensure_deck(DECK)
         model = client.ensure_model()
-        log_event("ensure", deck=deck, model=model)
-        print(json.dumps({"ok": True, "deck": deck, "model": model}))
+        # Schema migration: an install created before a field existed must gain
+        # it here, or every later updateNoteFields naming it is rejected.
+        migrate = getattr(client, "add_model_fields", None)
+        raw_added = migrate(MODEL, MIGRATABLE_FIELDS) if callable(migrate) else []
+        added = list(raw_added) if isinstance(raw_added, (list, tuple, set)) else []
+        log_event("ensure", deck=deck, model=model, added_fields=added)
+        print(json.dumps({"ok": True, "deck": deck, "model": model, "added_fields": added}))
         return 0
 
     svc = ConceptService(client)
+    if args.cmd == "concept":
+        return _concept_dispatch(args, svc)
     if args.cmd == "check":
         c = svc.get(args.concept_id)
         print(json.dumps({"exists": c is not None}))
@@ -359,7 +512,7 @@ def _dispatch(args) -> int:
         return 0
 
     if args.cmd == "search":
-        print(json.dumps(svc.search(topic=args.topic, level=args.level), ensure_ascii=False))
+        print(json.dumps(svc.search(topic=args.topic, level=args.level, query=args.query), ensure_ascii=False))
         return 0
 
     if args.cmd == "grade":

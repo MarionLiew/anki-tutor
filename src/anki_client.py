@@ -36,6 +36,14 @@ class AnkiConnectUnreachable(AnkiConnectError):
     """AnkiConnect could not be contacted at all — nothing was persisted."""
 
 
+class ConceptIDConflict(ValueError):
+    """More than one note claims the same ConceptID.
+
+    ConceptID is the stable identity key (doc §6.4): ambiguous identity must
+    stop the caller, never be resolved by picking a note arbitrarily.
+    """
+
+
 class AnkiClient:
     def __init__(self, url: str = ANKI_URL, api_key: str | None = ANKI_API_KEY, timeout: float = 15.0):
         self.url = url
@@ -103,6 +111,18 @@ class AnkiClient:
     def model_field_names(self, model: str = MODEL) -> list[str]:
         return self.invoke("modelFieldNames", modelName=model) or []
 
+    def add_model_fields(self, model: str = MODEL, fields: list[str] | None = None) -> list[str]:
+        """Add missing model fields (schema migration for existing installs).
+
+        Old installs created the model before these fields existed; Anki
+        rejects updateNoteFields for unknown fields, so they must be added
+        before any write. Idempotent: only absent fields are added.
+        """
+        missing = [f for f in (fields or []) if f not in self.model_field_names(model)]
+        for name in missing:
+            self.invoke("modelFieldAdd", modelName=model, fieldName=name)
+        return missing
+
     # -- notes -------------------------------------------------------------
     def find_notes(self, query: str) -> list[int]:
         return self.invoke("findNotes", query=query) or []
@@ -115,18 +135,44 @@ class AnkiClient:
     def find_concept(self, concept_id: str, deck: str = DECK) -> dict | None:
         """Return the note dict for a ConceptID, or None if absent.
 
-        ConceptID is stored as a field, so search both by field and by the
-        escaped literal to stay robust across Anki search quirks.
+        ConceptID is stored as a field, so search by field and then confirm the
+        exact literal value. Anki's field search is case-insensitive, so a
+        differently-cased query is reported as a spelling problem rather than
+        resolved to that note: silently accepting it, or falling back to the
+        first search hit, would let the caller update or grade a concept it did
+        not name (doc §13: stop and reconcile).
         """
         query = f'deck:"{deck}" ConceptID:"{concept_id}"'
         ids = self.find_notes(query)
         if not ids:
             return None
         notes = self.notes_info(ids)
-        for n in notes:
-            if (n.get("fields", {}).get("ConceptID", {}).get("value", "") or "").strip() == concept_id:
-                return n
-        return notes[0] if notes else None
+        exact = [
+            n for n in notes
+            if (n.get("fields", {}).get("ConceptID", {}).get("value", "") or "").strip() == concept_id
+        ]
+        if not exact:
+            # Anki's field search is case-insensitive: a query that differs from
+            # a stored id only by case is a spelling problem, not a hit and not a
+            # miss. Anything else the search returned is simply not this concept.
+            near = [
+                (n.get("fields", {}).get("ConceptID", {}).get("value", "") or "").strip()
+                for n in notes
+                if (n.get("fields", {}).get("ConceptID", {}).get("value", "") or "").strip().casefold()
+                == concept_id.casefold()
+            ]
+            if near:
+                raise ConceptIDConflict(
+                    f"'{concept_id}' is not the stored spelling of {near}; use the exact ConceptID"
+                )
+            return None
+        if len(exact) > 1:
+            raise ConceptIDConflict(
+                f"ConceptID '{concept_id}' matches {len(exact)} notes "
+                f"{[n.get('noteId') for n in exact]}; reconcile with merge or retire before "
+                "reading or grading"
+            )
+        return exact[0]
 
     def add_note(
         self,
@@ -218,6 +264,13 @@ class AnkiClient:
         if ease not in (1, 2, 3, 4):
             raise ValueError(f"ease must be 1-4, got {ease}")
         self.invoke("answerCards", answers=[{"cardId": int(card_id), "ease": int(ease)}])
+
+    def review_history(self, card_id: int) -> list[dict]:
+        """Read authoritative revlog rows for the exact card (no inferred reps)."""
+        result = self.invoke("getReviewsOfCards", cards=[int(card_id)])
+        if not isinstance(result, dict) or str(card_id) not in result:
+            raise AnkiConnectError("review history unavailable; refusing unverified grading")
+        return result[str(card_id)]
 
     def suspend_cards(self, card_ids: list[int]) -> None:
         if card_ids:

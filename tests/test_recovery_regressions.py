@@ -18,9 +18,16 @@ def test_transfer_latest_correct_preserves_first_failure():
     s.record_answer('wrong')
     s.advance_attempt(1)
     s.record_answer('correct')
-    assert s.data['evidence']['transfer'] == 'passed'
+    # The learner produced the answer only after a hint: assisted, not verified.
+    assert s.data['evidence']['transfer'] == 'assisted_correct'
     assert s.data['evidence']['transfer_first_failed'] is True
-    assert s.closure_decision().grade == 1
+    # An assisted transfer therefore does not close the concept: one more
+    # independent transfer is required before any grade is written.
+    assert s.closure_decision().action == 'ask_transfer'
+    s.set_current_question('x', 't2', objective='L2', is_transfer=True)
+    s.record_answer('correct')
+    assert s.data['evidence']['transfer'] == 'passed'
+    assert s.closure_decision().grade == 1  # the first failure still forces Again
 
 
 def test_cli_full_loop_isolated(tmp_path, monkeypatch):
@@ -28,8 +35,9 @@ def test_cli_full_loop_isolated(tmp_path, monkeypatch):
     from unittest.mock import Mock
     monkeypatch.setenv('ANKITUTOR_STATE', str(tmp_path))
     client = Mock()
+    client.review_history.side_effect = [[], [{"id": 1, "ease": 3}]]
     monkeypatch.setattr(cli, 'AnkiClient', lambda: client)
-    monkeypatch.setattr(cli.ConceptService, 'get', lambda self, cid: {'card_ids': [42]})
+    monkeypatch.setattr(cli.ConceptService, 'get', lambda self, cid: {'card_ids': [42], 'note_id': 24})
     for args in [['session','start','test.concept'], ['session','ask','test.concept','Explain'],
                  ['session','answer','correct'], ['grade','test.concept','3'],
                  ['session','close']]:

@@ -42,11 +42,23 @@ def test_partial_answer_needs_probe_not_automatic_good():
     assert d.action == "probe_current" and d.grade is None
 
 
-def test_budget_can_close_with_gap_but_never_good():
+def test_budget_closes_a_gap_but_never_falsifies_a_passed_objective():
+    # Unfinished target evidence: budget exhaustion ends the session with a gap.
     d = decide_next(first_attempt="wrong", latest="wrong", transfer="failed", budget_exhausted=True)
     assert d.action == "close_with_gap" and d.grade == 1
+    # Evidence already satisfied: the budget limits the session, not the grade —
+    # forcing Again here would write a false retrieval failure into Anki.
     d = decide_next(first_attempt="correct", latest="correct", transfer="not_needed", budget_exhausted=True)
-    assert d.action == "close_with_gap" and d.grade == 1
+    assert d.action == "close_concept" and d.grade == 3
+    d = decide_next(first_attempt="correct", latest="correct", transfer="passed",
+                    objective="L2", budget_exhausted=True)
+    assert d.action == "close_concept" and d.grade == 3
+
+
+def test_assisted_transfer_is_not_a_passed_transfer():
+    # Correct only after a hint: the record says so and never reads as verified.
+    d = decide_next(first_attempt="wrong", latest="correct", transfer="assisted_correct", objective="L2")
+    assert d.action == "ask_transfer" and d.grade is None
 
 
 def test_unsupported_inputs_rejected():

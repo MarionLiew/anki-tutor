@@ -104,6 +104,8 @@ class TutorSession:
 
     def set_current_question(self, concept_id: str, question: str, objective: str = "L1",
                              is_transfer: bool = False) -> None:
+        if self.data.get("grade_state") == "pending":
+            raise SessionError("pending grade: reconcile before asking; evidence preserved")
         if objective not in ("L0", "L1", "L2", "L3") or not concept_id or not question:
             raise SessionError("valid objective, concept and question required")
         evidence = self.data.get("evidence")
@@ -127,9 +129,12 @@ class TutorSession:
         self.data["is_transfer_question"] = is_transfer
         self.data["attempt"] = 1
         self.data["hint_level"] = 0
+        self.data.pop("hint_sent_at", None)
         self.data["status"] = "waiting_answer"
 
     def advance_attempt(self, hint_level: int) -> None:
+        if self.data.get("grade_state") == "pending":
+            raise SessionError("pending grade: retry/hint would overwrite evidence")
         if hint_level < 0:
             raise SessionError("invalid hint level")
         if hint_level:
@@ -138,21 +143,45 @@ class TutorSession:
         self.data["hint_level"] = hint_level
         self.data["status"] = "waiting_answer"
 
-    def record_answer(self, verdict: str, *, hinted: bool = False) -> None:
-        """Record an externally evaluated answer, without inventing an evaluation."""
+    def record_answer(self, verdict: str, *, hinted: bool = False, rubric=None,
+                      answer_text: str = "", spontaneous: bool = False) -> None:
+        """Record an externally evaluated answer, without inventing an evaluation.
+
+        A transfer answered correctly only after a hint is recorded as
+        assisted_correct: the learner did produce the answer, but the transfer
+        requirement (independent use in a new situation) is not met, so this
+        never reads as a passed verification (doc §6).
+        """
         if verdict not in ("correct", "partial", "wrong"):
             raise SessionError("invalid verdict")
+        if rubric is not None:
+            if not isinstance(rubric, list) or not rubric or any(
+                not isinstance(r, dict) or not r.get("criterion") or
+                not isinstance(r.get("met"), bool) or not r.get("evidence") for r in rubric):
+                raise SessionError("rubric requires criterion, boolean met and evidence per item")
+            if verdict == "correct" and any(not r["met"] for r in rubric):
+                raise SessionError("missing core rubric point: use partial/wrong, not correct")
+        if spontaneous and (hinted or self.hint_level):
+            raise SessionError("delivered hint cannot be labelled spontaneous")
         if self.status != "waiting_answer" or not self.data.get("current_question"):
             raise SessionError("no unanswered question")
         evidence = self.data.get("evidence")
         if not evidence or evidence["concept_id"] != self.current_concept:
             raise SessionError("missing concept evidence")
         hinted = hinted or self.hint_level > 0
+        self.data.setdefault("answer_records", []).append({"verdict": verdict,
+            "question": self.data["current_question"], "concept_id": self.current_concept,
+            "rubric": rubric, "answer_text": answer_text, "spontaneous": spontaneous,
+            "hinted": hinted, "hint_sent_at": self.data.get("hint_sent_at"), "recorded_at": _now_iso()})
         evidence["hints_used"] = evidence["hints_used"] or hinted
         if self.data.get("is_transfer_question"):
-            if verdict != "correct" or hinted:
+            if verdict != "correct":
+                evidence["transfer"] = "failed"
+            elif hinted:
+                evidence["transfer"] = "assisted_correct"
                 evidence["transfer_first_failed"] = True
-            evidence["transfer"] = "passed" if verdict == "correct" else "failed"
+            else:
+                evidence["transfer"] = "passed"
         else:
             if evidence["first_attempt"] is None:
                 evidence["first_attempt"] = "wrong" if hinted else verdict
