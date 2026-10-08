@@ -51,6 +51,7 @@ def test_pause_resume_excludes_wall_time_and_preserves_question(tmp_path, monkey
     path = tmp_path / "active.json"
     s.set_current_question("topic.concept", "Q")
     clock[0] += 60
+    s.data.update(time_accounting="explicit", active_seconds=60)
     s.pause(path)
     clock[0] += 3600
     s = load_session(path)
@@ -58,6 +59,8 @@ def test_pause_resume_excludes_wall_time_and_preserves_question(tmp_path, monkey
     s.resume(path)
     assert s.status == "waiting_answer" and s.data["current_question"] == "Q"
     clock[0] += 60
+    assert s.active_elapsed_seconds() == pytest.approx(60)
+    s.data['active_seconds'] += 60
     assert s.active_elapsed_seconds() == pytest.approx(120)
 
 

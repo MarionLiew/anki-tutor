@@ -81,11 +81,11 @@ class TutorSession:
         return True
 
     def active_elapsed_seconds(self) -> float:
-        accumulated = float(self.data.get("active_seconds", 0))
-        anchor = self.data.get("active_since_epoch", self.data.get("started_at_epoch"))
-        if self.status == "paused" or anchor is None:
-            return accumulated
-        return accumulated + max(0, _now_epoch() - float(anchor))
+        # Legacy clocks include unattended wall time: retain them as evidence,
+        # but never use them as measured learning duration.
+        if self.data.get("time_accounting") != "explicit":
+            return 0.0
+        return float(self.data.get("active_seconds", 0))
 
     def budget_remaining(self) -> dict:
         return {
@@ -152,7 +152,7 @@ class TutorSession:
         if self.data.get("is_transfer_question"):
             if verdict != "correct" or hinted:
                 evidence["transfer_first_failed"] = True
-            evidence["transfer"] = "passed" if verdict == "correct" and not hinted else "failed"
+            evidence["transfer"] = "passed" if verdict == "correct" else "failed"
         else:
             if evidence["first_attempt"] is None:
                 evidence["first_attempt"] = "wrong" if hinted else verdict
@@ -215,6 +215,8 @@ class TutorSession:
         self.data["resume_status"] = self.status
         self.data["pause_reason"] = reason
         self.data["paused_at_epoch"] = time.time()
+        if self.data.get("time_accounting") != "explicit":
+            self.data.setdefault("legacy_wall_seconds_unverified", self.data.get("active_seconds", 0))
         self.data["active_seconds"] = self.active_elapsed_seconds()
         self.data["active_since_epoch"] = None
         self.data["status"] = "paused"

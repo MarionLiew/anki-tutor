@@ -19,6 +19,12 @@ Review 2:  "如果患病率是30%呢？"
         再出一道全新变式确认你学会了。
 ```
 
+## Chat-only learning contract
+
+Users learn only in chat, not in Anki desktop review. Notes are machine-readable Concept records; Anki owns concepts and FSRS. Reuse CoreKnowledge for principles/boundaries, LearningObjective for goals/acceptance criteria, CommonErrors, SourceRefs and TutorInstruction for diagnosis and fresh questions. Desktop templates are not part of this repair.
+
+Stop and repair CLI failures; never fabricate missing cards or historical grades. Back up first. `session close --reason missing_concept` checks absence and archives ungraded evidence; budget closure does not imply mastery. `session time N` records measured active study only, never unattended wall time. `next` is a pure calculation, not persistence. Corrected transfer can pass while its first failure still forces Again. Cron skips answered questions and sends at most one paused-session reminder.
+
 ## What it does
 
 - Fixed Concept, live questions. Tracks one knowledge point forever, serves a new scenario each review.

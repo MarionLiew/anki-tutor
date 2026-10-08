@@ -19,6 +19,12 @@
         再出一道全新变式确认你真的会了。
 ```
 
+## 仅聊天学习契约
+
+用户仅在聊天学习，不使用 Anki 桌面复习。笔记是机器可读 Concept，Anki 管概念与 FSRS。复用 CoreKnowledge（核心知识/边界）、LearningObjective（目标/判定标准）、CommonErrors、SourceRefs、TutorInstruction 生成新题、诊断、评分；本次不改桌面渲染模板。
+
+CLI 故障应停下修复，不捏造缺失卡片或补写历史评分。先备份；`session close --reason missing_concept` 验证缺失并归档未评分证据；预算结案不代表掌握。`session time N` 仅登记有证据的学习秒数，等待不计；`next` 只计算不持久化。迁移重答正确可通过，但保留首次失败并按 Again。Cron 不重发已作答题，暂停提醒仅一次。
+
 ## 它能做什么
 
 - 概念固定，题目动态。长期追踪同一个知识点，每次复习换新情境。

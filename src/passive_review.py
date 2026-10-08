@@ -42,6 +42,10 @@ def run(limit: int = SESSION_POLICY["target_concepts"], now_epoch: float | None 
         paused_at = active.data.get("paused_at_epoch")
         now = time.time() if now_epoch is None else now_epoch
         if paused_at is None or now - float(paused_at) >= PAUSED_REMINDER_AFTER_SECONDS:
+            if active.data.get("paused_reminder_sent"):
+                return {"action": "skip", "reason": "paused_reminder_already_sent"}
+            active.data["paused_reminder_sent"] = True
+            active.save()
             return {
                 "action": "remind_paused",
                 "reason": "paused_session_due_for_reminder",
@@ -57,8 +61,10 @@ def run(limit: int = SESSION_POLICY["target_concepts"], now_epoch: float | None 
             "pause_reason": active.data.get("pause_reason", "unknown"),
             "note": "Paused less than 24 hours; do not remind on the same day.",
         }
-    if active and active.status in ("asking", "waiting_answer", "answer_received",
-                                    "diagnosing", "verifying_transfer", "graded"):
+    if active and active.status in ("answer_received", "diagnosing", "graded"):
+        return {"action": "skip", "reason": "question_already_answered",
+                "session_id": active.session_id}
+    if active and active.status in ("asking", "waiting_answer", "verifying_transfer"):
         return {
             "action": "resume",
             "session_id": active.session_id,

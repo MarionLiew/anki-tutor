@@ -92,7 +92,9 @@ def main(argv: list[str] | None = None) -> int:
     pause = steps.add_parser("pause")
     pause.add_argument("--reason", choices=["user_request", "topic_switch", "interrupted"], default="user_request")
     close = steps.add_parser("close")
-    close.add_argument("--reason", choices=["session_complete", "budget_exhausted", "user_request"], default="session_complete")
+    close.add_argument("--reason", choices=["session_complete", "budget_exhausted", "user_request", "missing_concept"], default="session_complete")
+    clock = steps.add_parser("time")
+    clock.add_argument("seconds", type=int, help="explicit observed active study seconds, never wall waiting")
     for step in ("show", "resume"):
         steps.add_parser(step)
 
@@ -257,9 +259,24 @@ def _session_dispatch(args) -> int:
             s.advance_attempt(args.level)
             s.save(path)
             _note("hint_given", session_id=s.session_id, concept_id=s.current_concept)
+        elif action == "time":
+            if args.seconds < 0 or s.status == "paused":
+                raise SessionError("nonnegative measured time requires an active session")
+            if s.data.get("time_accounting") != "explicit":
+                s.data["legacy_wall_seconds_unverified"] = s.data.get("active_seconds", 0)
+                s.data["active_seconds"] = 0
+            s.data["time_accounting"] = "explicit"
+            s.data["active_seconds"] += args.seconds
+            s.save(path)
         elif action == "close":
-            if s.status not in ("graded", "paused"):
+            if args.reason == "missing_concept" and ConceptService(AnkiClient()).get(s.current_concept):
+                raise SessionError("concept exists; missing_concept recovery refused")
+            if s.status not in ("graded", "paused") and args.reason not in ("missing_concept", "budget_exhausted", "user_request"):
                 raise SessionError("ungraded active session: pause instead of closing")
+            archive = path.parent / "closed_sessions" / (s.session_id + ".json")
+            s.data["closure_reason"] = args.reason
+            s.data["closure_outcome"] = "graded" if s.data.get("grade_state") == "completed" else "ungraded_no_mastery_claim"
+            s.save(archive)
             concept_id = s.current_concept
             s.close(path)
             _note("learning_exited", session_id=s.session_id, concept_id=concept_id,

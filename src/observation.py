@@ -20,7 +20,7 @@ KINDS = {"learning_entered", "learning_paused", "learning_resumed", "learning_ex
          "grade_submitted", "mentor_issue"}
 ISSUES = {"revealed_answer_too_early", "skipped_transfer", "unnecessary_detour",
           "wrong_grading", "changed_topic_too_soon", "other_review_needed"}
-REASONS = {"user_request", "topic_switch", "session_complete", "budget_exhausted", "interrupted", "unknown"}
+REASONS = {"user_request", "topic_switch", "session_complete", "budget_exhausted", "missing_concept", "interrupted", "unknown"}
 FIELDS = {"session_id", "concept_id", "reason", "verdict", "hinted", "transfer", "objective", "ease", "issue", "mode"}
 
 MAX_MESSAGES = 20
@@ -110,13 +110,14 @@ def report(path: Path, session_id: str | None = None) -> dict:
             "hints": sum(r["kind"] == "hint_given" for r in rows),
             "transfers": dict(Counter(r["transfer"] for r in rows if r["kind"] == "transfer_checked")),
             "grades_submitted": dict(Counter(str(r["ease"]) for r in rows if r["kind"] == "grade_submitted")),
-            "completed_active_seconds": round(elapsed),
+            "completed_active_seconds": None,
+            "legacy_wall_interval_seconds_unverified": round(elapsed),
             "open_intervals_excluded": len(clocks),
             "recent": rows[-12:]}
 
 
 def db_path() -> Path:
-    profile = os.environ.get("HERMES_SESSION_PROFILE", "default")
+    profile = os.environ.get("HERMES_SESSION_PROFILE") or "default"
     home = Path(os.environ.get("HERMES_HOME", str(Path.home() / ".hermes")))
     if profile != "default":
         # The caller must supply its own profile home; never read the default
@@ -140,11 +141,24 @@ def _identity(con: sqlite3.Connection, sid: str, profile: str, source: str) -> N
 
 def bind(db: Path | None = None) -> dict:
     sid = os.environ.get("HERMES_SESSION_ID")
-    profile = os.environ.get("HERMES_SESSION_PROFILE", "default")
+    profile = os.environ.get("HERMES_SESSION_PROFILE") or "default"
     source = os.environ.get("HERMES_SESSION_SOURCE")
-    if not sid or not source:
+    if not sid:
         raise ValueError("Hermes session identity unavailable; no chat observation bound")
     with _open(db or db_path()) as con:
+        identity = con.execute("SELECT source FROM sessions WHERE id=?", (sid,)).fetchone()
+        if identity and identity[0] == "subagent" and os.environ.get("HERMES_SESSION_KEY"):
+            routes = json.loads((db_path().parent / 'sessions' / 'sessions.json').read_text())
+            route = routes.get(os.environ['HERMES_SESSION_KEY'], {})
+            sid = route.get('session_id')
+            if not sid:
+                raise ValueError('parent chat route unavailable')
+            source = None
+        if not source:
+            row = con.execute("SELECT source, profile_name FROM sessions WHERE id=?", (sid,)).fetchone()
+            if not row or row[1] != profile:
+                raise ValueError("Hermes session scope/profile mismatch")
+            source = row[0]
         _identity(con, sid, profile, source)
         last = con.execute("SELECT COALESCE(MAX(id),0) FROM messages WHERE session_id=?", (sid,)).fetchone()[0]
     return {"session_id": sid, "profile": profile, "source": source, "after_id": last}
@@ -152,16 +166,15 @@ def bind(db: Path | None = None) -> dict:
 
 def watermark(db: Path, binding: dict) -> int:
     sid = binding["session_id"]
-    _require_current(binding)
+    _require_current(binding, db)
     with _open(db) as con:
         _identity(con, sid, binding["profile"], binding["source"])
         return int(con.execute("SELECT COALESCE(MAX(id),0) FROM messages WHERE session_id=?", (sid,)).fetchone()[0])
 
 
-def _require_current(binding: dict) -> None:
-    if (binding.get("session_id") != os.environ.get("HERMES_SESSION_ID") or
-        binding.get("profile") != os.environ.get("HERMES_SESSION_PROFILE", "default") or
-        binding.get("source") != os.environ.get("HERMES_SESSION_SOURCE")):
+def _require_current(binding: dict, db: Path | None = None) -> None:
+    current = bind(db)
+    if any(binding.get(k) != current.get(k) for k in ("session_id", "profile", "source")):
         raise ValueError("observation belongs to a different Hermes session")
 
 
@@ -178,7 +191,7 @@ def _excerpt(text: str) -> str:
 
 
 def read_range(db: Path, binding: dict, until_id: int) -> list[dict]:
-    _require_current(binding)
+    _require_current(binding, db)
     after = binding.get("after_id")
     if type(after) is not int or after < 0 or type(until_id) is not int or until_id < after:
         raise ValueError("invalid observation boundary")

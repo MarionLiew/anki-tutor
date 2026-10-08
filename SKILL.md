@@ -14,6 +14,14 @@ metadata:
 
 # AnkiTutor Skill
 
+## 聊天学习契约与故障恢复
+- 用户仅在聊天学习，不使用 Anki 桌面复习；概念笔记供 Tutor 机器读取，Anki 只管理 Concept 与 FSRS。不要为本需求改桌面正背面模板或展示 CoreKnowledge 答案。
+- 现有字段承载契约：CoreKnowledge 写核心知识与适用边界；LearningObjective 写学习目标与判定标准；CommonErrors 写误区；SourceRefs 写来源；TutorInstruction 写出题/诊断约束。先复用字段，不盲增字段。
+- CLI 预算、卡片缺失或持久化故障时停止教学并修复，不长期绕过。恢复前备份；`session close --reason missing_concept` 检查真实缺失并归档未评分证据，不创建无来源卡片、不追补评分。预算耗尽可 `session close --reason budget_exhausted`，未评分结案不是掌握。
+- `session time N` 只登记有证据的实际学习秒数；等待/无关话题不登记，未知记未知。旧墙钟数据不用于预算或速度判断。`next` 仅纯计算，不写 Session 或 Anki。
+- 每轮只解决一个真实瓶颈，验证后产出项目对照设计，不无限追例外。探测题不把答案藏进选项。零满仓双信号增量须与同样零满仓单信号比较；连续仓位版不能替原版证明。危机防御/alpha 明确基准，不二分；少暴露不等于择时 alpha，gate 不等于 risk budget，未证明不等于无效。
+
+
 **PURPOSE**：当用户明确进行学习、复习、答题、资料学习，或 Cron 触发到期复习时，为 Default Bot 提供自适应教学能力。本 Skill **不改变 Default Bot 的长期身份**，也不是独立 Bot（doc §3.1）。
 
 ## SOURCE OF TRUTH（数据职责边界）
@@ -64,7 +72,7 @@ anki-tutor/
    - **unconfirmed 时要主动问方向**：goal 为 unconfirmed 且 `should_ask_direction=true` 时，导师应在一次学习开场或 Cron 投递的第一句话里问一次「你当前主要想推进哪个方向（alpha / Polymarket / 黄金，或其他）」，用户答复后 `strategy propose + confirm`，随后 `strategy asked --because session_opening|cron_delivery` 记录已问。之后 7 天内不再重复问（`should_ask_direction` 会变 false）；用户不答或岔开就照常教学，沉默不是拒绝。confirmed 后永远不再问。
    - **每次学习顺带轻核对**：每次进入学习/Cron 投递本来就先跑 `strategy show`——返回里 `due_for_review=true` 时用一句「目标 到期复核：这条主线还成立吗？」顺带问一下即可，不打断节奏；用户确认后 `strategy confirm --revision N`（同版本再确认，revision 不变）或 `strategy revise` 更新措辞（revision+1）。**不等月末专门打断，也不建独立 Cron 提醒**。
    - **roadmap 登记**：confirm 后提议一条能力链（`strategy roadmap add <capability>`），每产生经核验的产出物或真实判断后 `strategy roadmap evidence <entry_id> "<证据>"`。选下一个教学主题看 `strategy roadmap gap`。
-2. **AnkiConnect 可用性**：`python3 src/cli.py health`。不可达 → 允许临时教学，但结束时**明确未持久化**。
+2. **AnkiConnect 可用性**：`python3 src/cli.py health`。不可达 → 停止本轮并修复；保留未评分证据，明确未持久化。
 3. **首次/缺失**：`python3 src/cli.py ensure` 建牌组 + Note Type（幂等）。
 4. 学习会话走 CLI：`session start <concept_id> [--task ... --bottleneck ...]`，发题前 `session ask <concept_id> <question> --objective L1/L2`（变式加 `--transfer`），诊断后 `session answer correct|partial|wrong`；错答后 `session hint`、重答。`session show/pause/resume` 管跨轮状态。先看到 `decision.action=close_concept` 或 `close_with_gap` 才能 `grade <concept_id> <ease>`；CLI 会对照已保存证据和首答/提示/迁移来拒绝不合规评分。更换概念前先评分，不得绕过。
 
@@ -132,7 +140,7 @@ Level = **"已验证的最高能力层级"**（L0 识别 / L1 回忆 / L2 应用
 ## 失败处理（doc §13/§16）
 | 故障 | 行为 |
 |------|------|
-| AnkiConnect 不可达 | 允许临时教学；结束时明确未持久化，不伪造成功 |
+| AnkiConnect 不可达 | 停止教学并修复，保留未评分证据，不伪造成功 |
 | ConceptID 冲突 | 停止自动创建；读两个对象 → merge 或人工选择 |
 | PDF 解析失败 | manifest 标 failed；**不产生无来源 Concept** |
 | LLM 无法可靠评开放题 | 降级为追问/让用户解释；不强写 Easy/Good |
