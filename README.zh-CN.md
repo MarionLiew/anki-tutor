@@ -4,9 +4,9 @@
   <a href="README.md">English</a> · <b>简体中文</b>
 </p>
 
-概念固定，题目每次都是新的。
+Fixed concepts. Fresh questions every review.
 
-**AnkiTutor** 让你的 AI 助手在你的 Anki 之上当自适应导师。一张卡存一个 Concept（你想长期记住的那个知识点），每次到期时，agent 都**重新出一道题**——同一张卡，绝不重复同一场复习。练的是迁移，不是背答案。
+AnkiTutor 让 AI 助手在聊天中围绕 Anki 概念教学。每张笔记保存一个知识点，助手编写新的复习题并检查迁移。CLI 保存证据、核验评分回执，但不会自行出题或判断答案。
 
 ```
 概念：base_rate_neglect（基础率忽略）
@@ -22,7 +22,7 @@
 
 ## 审计后的教学与持久化契约
 - 新稳定概念先 `search "检索词" --topic research --level L0`，复用或创建带来源/判定标准的概念。先成功登记 `session ask` 再出题；CLI 非零退出必须停教修复，不能在聊天绕过。
-- 开放题逐项核对核心裁决点；MDE 题仅说“不显著”而未比较经济门槛不算完整。用 `session answer partial --rubric '[{"criterion":"经济门槛比较","met":false,"evidence":"回答未比较"}]'` 保存证据；`--answer-text` 可选，只存必要摘录。程序验证结构/一致性，不自动评自由答案、检查真实性或证明学习效果。旧 verdict-only 调用保留兼容；新开放题应提供完整 rubric。
+- 开放题逐项核对核心裁决点；MDE 题仅说"不显著"而未比较经济门槛不算完整。用 `session answer partial --rubric '[{"criterion":"经济门槛比较","met":false,"evidence":"回答未比较"}]'` 保存证据；`--answer-text` 可选，只存必要摘录。程序验证结构/一致性，不自动评自由答案、检查真实性或证明学习效果。旧 verdict-only 调用保留兼容；新开放题应提供完整 rubric。
 - `session hint` 无时间戳只准备重答，不计提示。实际发送后 `session hint --sent-at <含时区ISO时间>` 才登记依赖；用户先自行补答用 `session answer correct --spontaneous`。历史直接 `--hinted`/Python hint_level 仍是调用者对已送达提示的显式声明，不伪造时间。
 - `next`/answer 的 decision.grade 是建议，不是已评分。只有 `grade` 写入后 exact card revlog 读回匹配，才报告成功；pending 禁止新题/提示覆盖和盲重试。`session reconcile` 只读 Anki核对并恢复已确认记录；无新增、多个新增、ease不符、旧 pending 无基线一律保留等待人工审计，不追补评分。
 - Level 是已独立验证能力，TargetLevel 是教学目标；旧 Level 不批量迁移、不倒填掌握证据。通用方法一次先讲一个步骤再短练习，不代填用户机制；用户自称学会不是证据。
@@ -31,7 +31,7 @@
 
 ## 仅聊天学习契约
 
-用户仅在聊天学习，不使用 Anki 桌面复习。笔记是机器可读 Concept，Anki 管概念与 FSRS。复用 CoreKnowledge（核心知识/边界）、LearningObjective（目标/判定标准）、CommonErrors、SourceRefs、TutorInstruction 生成新题、诊断、评分；本次不改桌面渲染模板。
+用户仅在聊天学习，不使用 Anki 桌面复习。笔记是机器可读 Concept，Anki 管概念与 FSRS。复用 CoreKnowledge（核心知识/边界）、LearningObjective（目标/判定标准）、CommonErrors、SourceRefs、TutorInstruction 生成新题、诊断、评分；桌面复习模板不属于聊天学习流程。
 
 CLI 故障应停下修复，不捏造缺失卡片或补写历史评分。先备份；`session close --reason missing_concept` 验证缺失并归档未评分证据；预算结案不代表掌握。`session time N` 仅登记有证据的学习秒数，等待不计；`next` 只计算不持久化。迁移重答正确可通过，但保留首次失败并按 Again。Cron 不重发已作答题，暂停提醒仅一次。
 
@@ -50,18 +50,22 @@ CLI 故障应停下修复，不捏造缺失卡片或补写历史评分。先备�
 ```text
 把 AnkiTutor 安装到 ~/.anki-tutor，仓库：
 https://github.com/MarionLiew/anki-tutor 。
-git clone 后创建 state/ 和 library/ 子目录，pip install -r requirements.txt，
+git clone 后创建 state/ 和 library/ 子目录，python3 -m pip install -r requirements.txt，
 然后运行验证：
     cd ~/.anki-tutor && python3 src/cli.py health
 AnkiConnect 健康检查成功会返回含 `"version": 6` 的 JSON。Anki 未运行就说明连接失败；不要动已有文件、密钥或数据。
 ```
+
+上述步骤克隆 CLI，不会自动向助手注册 skill。Hermes 可将克隆路径改为 `~/.hermes/skills/anki-tutor`，然后用 `/skill anki-tutor` 加载；其他助手需使用各自的技能加载方式。
 
 或者手敲命令：
 
 ```bash
 git clone https://github.com/MarionLiew/anki-tutor.git ~/.anki-tutor
 cd ~/.anki-tutor
-pip install -r requirements.txt
+mkdir -p state library
+python3 -m pip install -r requirements.txt
+python3 src/cli.py health
 python3 src/cli.py ensure
 ```
 
@@ -81,15 +85,18 @@ python3 src/cli.py strategy propose alpha --outcome "独立验证一条策略假
 python3 src/cli.py strategy confirm --revision 1
 python3 src/cli.py strategy roadmap add "设计达到功效的检验"
 python3 src/cli.py strategy roadmap add "排查卡死的自动化流水线" --kind optional
-python3 src/cli.py strategy roadmap evidence "设计达到功效的检验" "2026-09-24 MDE 审计通过"
+# 只有独立核验真实产出后才能登记 roadmap 证据。
 python3 src/cli.py strategy roadmap gap                       # 下一个缺证据的 required 能力
-python3 src/cli.py strategy roadmap gap --serving "Polymarket 采集卡住"  # 当前任务优先
+python3 src/cli.py strategy roadmap gap --serving "排查卡死的自动化流水线"  # 当前任务优先
+# 前提：此带来源概念已经存在（先 search/get 核对）。
 python3 src/cli.py session start quantos.research.mde_definition --task "审查基准" --bottleneck "理解 MDE"
 python3 src/cli.py session ask quantos.research.mde_definition "MDE 为两个百分点意味着什么？" --objective L1
 python3 src/cli.py session answer wrong  # 记录导师已判断的答案，CLI 不自行判开放题
-python3 src/cli.py session hint
+python3 src/cli.py session hint  # 只准备重答，不记录提示送达
+# 真实发送提示后，登记实际含时区时间：
+# python3 src/cli.py session hint --sent-at <actual-ISO-timestamp>
 python3 src/cli.py session answer correct
-python3 src/cli.py session ask quantos.research.mde_definition "新情境：MDE 3pp、观察差异 1pp，怎么判断？" --objective L1 --transfer
+python3 src/cli.py session ask quantos.research.mde_definition "新情境：MDE 3pp、观察差异 1pp，为什么仅凭这些不能判断显著性？" --objective L1 --transfer
 python3 src/cli.py session answer correct
 python3 src/cli.py grade quantos.research.mde_definition 1  # 证据允许后才回写
 ```
@@ -138,6 +145,10 @@ AnkiTutor 不是又一个 Anki，不是独立导师 Bot，也不是 LMS。它是
 - Python 3.10+，`pypdf` / `python-docx`（解析用），`pytest`（测试用）
 - 测试完全离线、不需要 Anki：`python3 -m pytest tests/ -q`（mock AnkiConnect）
 
-## 许可
+## 贡献与许可
+
+报告可复现的问题或提交 pull request；提交前运行离线测试。
+
+SPDX 许可标识：`MIT`。
 
 MIT © 2026 Marion Liew。见 [LICENSE](LICENSE)。

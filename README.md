@@ -6,17 +6,16 @@
 
 Fixed concepts. Fresh questions every review.
 
-**AnkiTutor** turns your AI assistant into an adaptive tutor on top of Anki. Store one Concept per note — the thing you want to remember — and every time it's due the agent writes a **new** question. Same card, never the same review, so you practice transfer instead of the answer key.
+AnkiTutor lets your AI assistant teach from Anki concepts in chat. Each note stores one knowledge point; the assistant writes fresh review questions and checks transfer. The CLI records evidence and verifies review receipts, but does not generate questions or judge answers itself.
 
 ```
 Concept: base_rate_neglect
 ─────────────────────────────────────────────
-Review 1:  "某病患病率1%，灵敏度90%，假阳10%，
-           检测阳性后实际患病概率？"
-Review 2:  "如果患病率是30%呢？"
+Review 1:  "Prevalence 1%, sensitivity 90%, false-positive rate 10%.
+           After a positive test, what is the disease probability?"
+Review 2:  "What changes if prevalence is 30%?"
 ─────────────────────────────────────────────
-答错？ agent 给最小提示 → 你重答 →
-        再出一道全新变式确认你学会了。
+Wrong answer → minimal hint → retry → fresh transfer question.
 ```
 
 
@@ -31,7 +30,7 @@ Review 2:  "如果患病率是30%呢？"
 
 ## Chat-only learning contract
 
-Users learn only in chat, not in Anki desktop review. Notes are machine-readable Concept records; Anki owns concepts and FSRS. Reuse CoreKnowledge for principles/boundaries, LearningObjective for goals/acceptance criteria, CommonErrors, SourceRefs and TutorInstruction for diagnosis and fresh questions. Desktop templates are not part of this repair.
+Users learn only in chat, not in Anki desktop review. Notes are machine-readable Concept records; Anki owns concepts and FSRS. Reuse CoreKnowledge for principles/boundaries, LearningObjective for goals/acceptance criteria, CommonErrors, SourceRefs and TutorInstruction for diagnosis and fresh questions. Desktop review templates are outside the chat-learning workflow.
 
 Stop and repair CLI failures; never fabricate missing cards or historical grades. Back up first. `session close --reason missing_concept` checks absence and archives ungraded evidence; budget closure does not imply mastery. `session time N` records measured active study only, never unattended wall time. `next` is a pure calculation, not persistence. Corrected transfer can pass while its first failure still forces Again. Cron skips answered questions and sends at most one paused-session reminder.
 
@@ -50,22 +49,26 @@ Paste this into any AI assistant (Hermes, Claude, GPT, …):
 ```text
 Install AnkiTutor into ~/.anki-tutor from
 https://github.com/MarionLiew/anki-tutor . Clone it, create the state/ and
-library/ subdirs, pip install -r requirements.txt, then verify with:
+library/ subdirs, python3 -m pip install -r requirements.txt, then verify with:
     cd ~/.anki-tutor && python3 src/cli.py health
 A successful health check returns JSON with `"version": 6`. If Anki isn't running,
 report that the connection failed; don't touch existing files, keys or data.
 ```
+
+This clones the CLI; it does not register a skill in your assistant. For Hermes, use `~/.hermes/skills/anki-tutor` as the clone path instead and load `/skill anki-tutor`. Other assistants need their own skill-loading setup.
 
 Or the plain commands:
 
 ```bash
 git clone https://github.com/MarionLiew/anki-tutor.git ~/.anki-tutor
 cd ~/.anki-tutor
-pip install -r requirements.txt
+mkdir -p state library
+python3 -m pip install -r requirements.txt
+python3 src/cli.py health
 python3 src/cli.py ensure
 ```
 
-Beyond Python 3.10 you need the **Anki desktop app** and the **AnkiConnect plugin** (code `2055492159`, listens on `localhost:8765`). Without Anki, local strategy/session commands still work, but Anki reads and grading cannot be verified or persisted; do not report a successful Anki write.
+Alongside Python 3.10+ you need the **Anki desktop app** and the **AnkiConnect plugin** (code `2055492159`, listens on `localhost:8765`). Without Anki, local strategy/session commands still work, but Anki reads and grading cannot be verified or persisted; do not report a successful Anki write.
 
 ## Quick start
 
@@ -81,15 +84,18 @@ python3 src/cli.py strategy propose alpha --outcome "independently validate one 
 python3 src/cli.py strategy confirm --revision 1  # only after the user confirms this exact proposal
 python3 src/cli.py strategy roadmap add "design a statistically powered test"
 python3 src/cli.py strategy roadmap add "troubleshoot stuck automation" --kind optional
-python3 src/cli.py strategy roadmap evidence "design a statistically powered test" "2026-09-24 MDE audit passed"
+# Record roadmap evidence only after independently verifying a real output.
 python3 src/cli.py strategy roadmap gap                       # next required capability
 python3 src/cli.py strategy roadmap gap --serving "polymarket data collection stuck"  # live task first
+# Prerequisite: this sourced concept must already exist (search/get first).
 python3 src/cli.py session start quantos.research.mde_definition --task "audit a baseline" --bottleneck "interpret MDE"
 python3 src/cli.py session ask quantos.research.mde_definition "What does an MDE of 2 percentage points mean?" --objective L1
 python3 src/cli.py session answer wrong  # record an evaluated answer, not a guessed verdict
-python3 src/cli.py session hint
+python3 src/cli.py session hint  # prepares a retry; does not record delivery
+# After sending a real hint, record its actual timezone-aware timestamp:
+# python3 src/cli.py session hint --sent-at <actual-ISO-timestamp>
 python3 src/cli.py session answer correct
-python3 src/cli.py session ask quantos.research.mde_definition "New scenario: MDE 3pp, observed 1pp; what follows?" --objective L1 --transfer
+python3 src/cli.py session ask quantos.research.mde_definition "New scenario: MDE 3pp, observed 1pp; why can these alone not establish significance?" --objective L1 --transfer
 python3 src/cli.py session answer correct
 python3 src/cli.py grade quantos.research.mde_definition 1  # only after evidence authorizes it
 ```
@@ -138,6 +144,10 @@ AnkiTutor isn't a new Anki, a standalone tutor bot, or an LMS. It's a skill the 
 - Python 3.10+, `pypdf` / `python-docx` for ingest, `pytest` for tests.
 - Tests run fully offline, no Anki: `python3 -m pytest tests/ -q` (mock AnkiConnect).
 
-## License
+## Contributing and license
+
+Report reproducible bugs or submit a pull request; run the offline tests before submitting.
+
+SPDX license identifier: `MIT`.
 
 MIT © 2026 Marion Liew. See [LICENSE](LICENSE).
