@@ -44,6 +44,7 @@ def test_session_private_mode(tmp_path):
 def test_passive_review_starts_without_fabricated_question(tmp_path, monkeypatch):
     path = tmp_path / "active.json"
     monkeypatch.setattr(passive_review, "load_session", lambda: session.load_session(path))
+    monkeypatch.setattr(passive_review, "session_path", lambda: path)
     monkeypatch.setattr(session, "ACTIVE_SESSION_PATH", path)
     # save() default bound path is defined at import time; bind it here for this test.
     original_save = session.TutorSession.save
@@ -63,7 +64,8 @@ def test_passive_review_starts_without_fabricated_question(tmp_path, monkeypatch
     assert saved.data["current_question"] == ""
     saved.set_current_question("topic.mde", "What is MDE?")
     saved.save(path)
-    assert passive_review.run()["action"] == "resume"
+    assert passive_review.run()["reason"] == "foreground_session_exists"
     saved.pause(path)
     paused_tick = passive_review.run()
-    assert paused_tick["action"] == "skip" and paused_tick["reason"] == "session_paused"
+    assert paused_tick["action"] == "start"
+    assert (tmp_path / "paused_sessions" / (saved.session_id + ".json")).exists()

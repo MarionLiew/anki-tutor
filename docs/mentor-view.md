@@ -1,5 +1,12 @@
 # Mentor view: a decision rule inside the conversation
 
+Authoritative principles: [learning-contract.md](learning-contract.md); engineering
+maintenance entry: root `AGENTS.md`. This document contains intervention details,
+not another definition of mastery or a scheduler. Use the user's selected Focus;
+temporary learning is legitimate without a Track. A switched-away Track snapshot
+is dormant, preserves evidence, and does not block ordinary due review. Never
+interpret completion/archive as permission to suspend its Concepts.
+
 AnkiTutor does not introduce a second persona. The same assistant teaches, notices how the session is going, and occasionally changes course. The user can ask for a review of their learning at any time; otherwise this view stays quiet unless a useful intervention is warranted.
 
 ## Evidence and boundaries
@@ -53,4 +60,4 @@ This is a bounded evidence feed for improving teaching, not a complete or infall
 - Two turns on an irrelevant detail: propose parking it, without overriding an explicit request to explore it.
 - User changes topic: pause the current question; resuming presents the same question, not a new session.
 - User asks "How fast am I learning?" with one recorded answer: state that speed cannot be estimated yet.
-- Anki unavailable: teach if useful, but report that progress and grade were not persisted.
+- Anki unavailable: stop and repair; preserve evidence, never claim unverified persistence.

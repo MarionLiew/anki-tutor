@@ -326,11 +326,11 @@ def test_revise_to_a_different_goal_does_not_inherit_roadmap(tmp_path, monkeypat
     strategy.roadmap_evidence("design a powered test", "MDE audit passed")
     revised = strategy.revise("polymarket", confirmed["revision"], "predict better", "pre-registered")
     assert revised["roadmap"] == []
-    # the same goal keeps its evidence through a wording revision
+    # An unchanged outcome/criterion keeps evidence; changed text cannot prove equivalence.
     strategy.confirm(revised["revision"])
     strategy.roadmap_add("pre-register a question")
     strategy.roadmap_evidence("pre-register a question", "registered on 2026-10-08")
-    same = strategy.revise("polymarket", revised["revision"], "predict better still", "pre-registered")
+    same = strategy.revise("polymarket", revised["revision"], "predict better", "pre-registered")
     assert [e["id"] for e in same["roadmap"]] == ["pre-register a question"]
 
 

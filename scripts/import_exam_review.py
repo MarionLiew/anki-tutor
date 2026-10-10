@@ -65,12 +65,12 @@ for cid, title, core, lo, lvl, prereq, errs, refs, hint in concepts:
     existing = svc.get(cid)
     if existing:
         svc.update({"concept_id": cid, "title": title, "core_knowledge": core,
-                    "learning_objective": lo, "level": lvl, "source_refs": refs_full,
+                    "learning_objective": lo, "target_level": lvl, "source_refs": refs_full,
                     "tutor_instruction": hint})
         print(f"[update] {cid}")
     else:
         svc.create({"concept_id": cid, "title": title, "core_knowledge": core,
-                    "learning_objective": lo, "level": lvl,
+                    "learning_objective": lo, "level": "L0", "target_level": lvl,
                     "prerequisites": prereq, "common_errors": errs,
                     "source_refs": refs_full, "status": "active",
                     "tutor_instruction": hint, "version": 1,

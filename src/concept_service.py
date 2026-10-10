@@ -202,9 +202,13 @@ class ConceptService:
         return concept
 
     def search(self, topic: str | None = None, level: str | None = None,
-               status: str | None = None, query: str | None = None) -> list[dict]:
+               status: str | None = None, query: str | None = None,
+               track_id: str | None = None) -> list[dict]:
         """Lightweight search used by 查看掌握情况."""
         q = [f'deck:"{self.deck}"']
+        if track_id is not None:
+            from strategy import validate_track_id
+            q.append("tag:track::" + validate_track_id(track_id))
         if topic:
             q.append(f"tag:topic::{_slug(topic)}")
         if level:
@@ -224,6 +228,27 @@ class ConceptService:
         return out
 
     # -- tags ---------------------------------------------------------------
+    def link_track(self, concept_id: str, track_id: str) -> dict:
+        from strategy import get_track
+        get_track(track_id)
+        return self._track_tag(concept_id, track_id, True)
+
+    def unlink_track(self, concept_id: str, track_id: str) -> dict:
+        return self._track_tag(concept_id, track_id, False)
+
+    def _track_tag(self, concept_id: str, track_id: str, add: bool) -> dict:
+        from strategy import validate_track_id
+        tag = "track::" + validate_track_id(track_id)
+        concept = self.get(concept_id)
+        if not concept:
+            raise ConceptError("concept not found; linking never creates a note")
+        method = self.client.add_tags if add else self.client.remove_tags
+        method([concept["note_id"]], [tag])
+        result = self.get(concept_id)
+        if not result or (tag in result["tags"]) != add:
+            raise ConceptError("track tag read-back failed")
+        return result
+
     def _replace_managed_tags(self, note_id: int, old_tags: list[str], concept: dict) -> list[str]:
         """Bring the note's managed tags in line with the concept.
 

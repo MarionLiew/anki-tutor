@@ -49,7 +49,9 @@ def record(path: Path, kind: str, **fields) -> dict:
             raise ValueError("invalid reason")
         elif key == "issue" and value not in ISSUES:
             raise ValueError("invalid issue")
-        elif key in ("verdict", "transfer") and value not in ("correct", "partial", "wrong", "passed", "failed"):
+        elif key == "verdict" and value not in ("correct", "partial", "wrong"):
+            raise ValueError("invalid verdict")
+        elif key == "transfer" and value not in ("passed", "failed", "assisted_correct"):
             raise ValueError("invalid verdict")
         elif key == "objective" and value not in ("L0", "L1", "L2", "L3"):
             raise ValueError("invalid objective")

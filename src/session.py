@@ -13,6 +13,8 @@ from __future__ import annotations
 import json
 import os
 import time
+import fcntl
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
@@ -152,6 +154,8 @@ class TutorSession:
         requirement (independent use in a new situation) is not met, so this
         never reads as a passed verification (doc §6).
         """
+        if self.data.get("grade_state") == "pending":
+            raise SessionError("pending grade: reconcile before recording an answer")
         if verdict not in ("correct", "partial", "wrong"):
             raise SessionError("invalid verdict")
         if rubric is not None:
@@ -215,6 +219,10 @@ class TutorSession:
 
     def save(self, path: Path = ACTIVE_SESSION_PATH) -> None:
         path = Path(path)
+        if path.name == "active_session.json" and path.exists():
+            current = load_session(path)
+            if current and current.session_id != self.session_id:
+                raise SessionError("existing foreground session: refusing overwrite")
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix(path.suffix + ".tmp")
         fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
@@ -227,6 +235,8 @@ class TutorSession:
         log_event("session_saved", session_id=self.session_id, status=self.status)
 
     def close(self, path: Path = ACTIVE_SESSION_PATH) -> None:
+        if self.data.get("grade_state") == "pending":
+            raise SessionError("pending grade: reconcile before closing")
         path = Path(path)
         # Persist only the long-term-relevant outcome, then drop short-term state.
         log_event(
@@ -238,6 +248,8 @@ class TutorSession:
             path.unlink()
 
     def pause(self, path: Path = ACTIVE_SESSION_PATH, reason: str = "user_request") -> None:
+        if self.data.get("grade_state") == "pending":
+            raise SessionError("pending grade: reconcile before pausing")
         path = Path(path)
         if self.status == "paused":
             return
@@ -252,6 +264,8 @@ class TutorSession:
         self.save(path)
 
     def resume(self, path: Path = ACTIVE_SESSION_PATH) -> None:
+        if self.data.get("grade_state") == "pending":
+            raise SessionError("pending grade: reconcile before resuming")
         if self.status != "paused":
             raise SessionError("session is not paused")
         self.data["status"] = self.data.pop("resume_status", "waiting_answer" if self.data.get("current_question") else "asking")
@@ -309,8 +323,12 @@ def load_session(path: Path = ACTIVE_SESSION_PATH) -> TutorSession | None:
     try:
         with path.open(encoding="utf-8") as fh:
             data = json.load(fh)
-    except (json.JSONDecodeError, OSError):
-        return None
+    except (json.JSONDecodeError, OSError) as exc:
+        raise SessionError("unreadable session state: preserve and inspect before teaching") from exc
+    if not isinstance(data, dict) or data.get("status") not in SESSION_STATUSES:
+        raise SessionError("invalid session state: preserve and inspect before teaching")
+    if data.get("status") == "closed" and data.get("grade_state") == "pending":
+        raise SessionError("pending grade in closed state: audit before teaching")
     s = TutorSession(data)
     return s if s.status in ("asking", "waiting_answer", "answer_received",
                              "diagnosing", "verifying_transfer", "graded", "paused") else None
@@ -322,5 +340,107 @@ def active_session_exists(path: Path = ACTIVE_SESSION_PATH) -> bool:
 
 
 def clear_session(path: Path = ACTIVE_SESSION_PATH) -> None:
+    current = load_session(path)
+    if current and current.data.get("grade_state") == "pending":
+        raise SessionError("pending grade: reconcile before clearing")
     if path.exists():
         path.unlink()
+
+
+def park_session(s: TutorSession, path: Path) -> Path:
+    """Snapshot before releasing foreground; never infer answer evidence."""
+    if s.data.get("grade_state") == "pending":
+        raise SessionError("pending grade: reconcile before snapshot")
+    import strategy
+    key = s.data.get("track_id") or s.session_id
+    strategy.validate_track_id(key)
+    snapshot = path.parent / "paused_sessions" / (key + ".json")
+    if snapshot.exists():
+        existing = load_session(snapshot)
+        if not existing or existing.session_id != s.session_id:
+            raise SessionError("existing paused snapshot: restore or close it first")
+    binding = s.data.get("observation_binding")
+    if binding and "until_id" not in binding:
+        import observation
+        try:
+            binding["until_id"] = observation.watermark(observation.db_path(), binding)
+        except (ValueError, OSError):
+            pass
+    was_paused = s.status == "paused"
+    s.pause(path, reason="topic_switch")
+    s.save(snapshot)
+    if json.loads(snapshot.read_text()) != s.data:
+        raise SessionError("snapshot verification failed; foreground preserved")
+    path.unlink()
+    if not was_paused:
+        _snapshot_transition(s, path, "learning_paused")
+    return snapshot
+
+
+def restore_snapshot(key: str, path: Path) -> TutorSession | None:
+    import strategy
+    strategy.validate_track_id(key)
+    if load_session(path):
+        raise SessionError("existing foreground session: pause or close it first")
+    snapshot = path.parent / "paused_sessions" / (key + ".json")
+    if not snapshot.exists():
+        return None
+    s = load_session(snapshot)
+    if not s or s.data.get("grade_state") == "pending":
+        raise SessionError("unsafe paused snapshot; manual reconciliation required")
+    if s.data.get("track_id") and strategy.show().get("id") != s.data["track_id"]:
+        raise SessionError("select the snapshot Track as Focus before resuming")
+    if s.data.get("strategy_revision"):
+        goal = strategy.get_track(s.data["track_id"]) if s.data.get("track_id") else strategy.show()
+        from datetime import datetime
+        if goal.get("status") != "confirmed" or goal.get("revision") != s.data["strategy_revision"] or datetime.fromisoformat(goal["review_due_at"]) <= datetime.now(timezone.utc):
+            raise SessionError("strategic goal changed or is due for review; align session before resuming")
+    s.resume(path)
+    binding = s.data.get("observation_binding")
+    if binding:
+        s.data.setdefault("observation_binding_history", []).append(dict(binding))
+        import observation
+        try:
+            s.data["observation_binding"] = observation.bind()
+        except (ValueError, OSError):
+            s.data.pop("observation_binding", None)
+        s.save(path)
+    snapshot.unlink()
+    _snapshot_transition(s, path, "learning_resumed")
+    return s
+
+
+def _snapshot_transition(s: TutorSession, path: Path, kind: str) -> None:
+    reason = "topic_switch" if kind == "learning_paused" else "user_request"
+    log_event(kind, session_id=s.session_id, mode=s.mode,
+              concept_id=s.current_concept, reason=reason)
+    import observation
+    try:
+        observation.record(path.parent / "learning_observations.jsonl", kind,
+                           session_id=s.session_id, concept_id=s.current_concept,
+                           reason=reason)
+    except (ValueError, OSError):
+        pass
+
+
+def assert_safe_snapshots(path: Path) -> None:
+    current = load_session(path)
+    for file in (path.parent / "paused_sessions").glob("*.json"):
+        s = load_session(file)
+        if not s or s.status != "paused" or s.data.get("grade_state") == "pending":
+            raise SessionError("unsafe paused snapshot (pending or invalid): audit before teaching")
+        if current and current.session_id == s.session_id:
+            raise SessionError("interrupted snapshot transition: duplicate session evidence, audit before teaching")
+
+
+@contextmanager
+def state_lock(path: Path):
+    """Serialize local CLI/Cron transitions, not Anki's remote review operations."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(str(path.parent / ".tutor.lock"), os.O_RDWR | os.O_CREAT, 0o600)
+    with os.fdopen(fd, "w") as fh:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)

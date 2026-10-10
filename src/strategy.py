@@ -85,7 +85,7 @@ def _valid_candidate(value) -> str:
     return value
 
 
-def _read() -> Optional[dict]:
+def _read_store() -> Optional[dict]:
     path = _path()
     if not path.exists():
         return None
@@ -93,6 +93,14 @@ def _read() -> Optional[dict]:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
         raise ValueError("strategy state is unreadable; refusing to overwrite") from exc
+    if isinstance(data, dict) and data.get("version") == 3:
+        if not isinstance(data.get("tracks"), dict) or data.get("focus") not in (None, *data["tracks"]):
+            raise ValueError("invalid track store; refusing to overwrite")
+        for tid, track in data["tracks"].items():
+            validate_track_id(tid)
+            if not isinstance(track, dict) or track.get("id") != tid or track.get("track_status") not in ("active", "completed", "archived"):
+                raise ValueError("invalid track record; refusing to overwrite")
+        return data
     if not isinstance(data, dict) or data.get("version") not in (1, 2) or data.get("status") not in ("proposed", "confirmed", "expired") or not isinstance(data.get("revision"), int) or isinstance(data.get("revision"), bool) or data["revision"] < 1:
         raise ValueError("strategy state is invalid; refusing to overwrite")
     _valid_candidate(data.get("candidate"))
@@ -109,6 +117,113 @@ def _read() -> Optional[dict]:
         data["roadmap"] = []
         data["version"] = 2
     return data
+
+
+def _read() -> Optional[dict]:
+    data = _read_store()
+    if data and data.get("version") == 3:
+        return data["tracks"].get(data["focus"])
+    return data
+
+
+def validate_track_id(value: str) -> str:
+    if not isinstance(value, str) or not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", value):
+        raise ValueError("track ID must match [a-z0-9][a-z0-9_-]{0,63}; no normalization")
+    return value
+
+
+def migrate() -> dict:
+    """Back up before atomic migration; reads never infer historical progress."""
+    store = _read_store()
+    if store and store.get("version") == 3:
+        return {"migrated": False, "focus": store["focus"]}
+    path = _path()
+    if store:
+        backup = path.with_name("strategy.legacy.bak")
+        original = path.read_bytes()
+        if backup.exists() and backup.read_bytes() != original:
+            raise ValueError("legacy backup differs; manual recovery required")
+        if not backup.exists():
+            with backup.open("xb") as fh:
+                os.fchmod(fh.fileno(), 0o600)
+                fh.write(original)
+                fh.flush()
+                os.fsync(fh.fileno())
+        if backup.read_bytes() != original:
+            raise ValueError("backup verification failed")
+        store.update(id="legacy", name=store["candidate"], track_status="active")
+    wrapper = {"version": 3, "focus": "legacy" if store else None,
+               "tracks": {"legacy": store} if store else {}}
+    _atomic_write(wrapper)
+    if _read_store() != wrapper:
+        raise ValueError("migration verification failed; restore strategy.legacy.bak")
+    return {"migrated": bool(store), "focus": wrapper["focus"]}
+
+
+def list_tracks() -> dict:
+    store = _read_store()
+    if not store:
+        return {"focus": None, "tracks": []}
+    if store.get("version") != 3:
+        return {"focus": "legacy", "tracks": [dict(store, id="legacy", name=store["candidate"], track_status="active")]}
+    return {"focus": store["focus"], "tracks": list(store["tracks"].values())}
+
+
+def create_track(track_id: str, name: str, outcome: str, criterion: str) -> dict:
+    validate_track_id(track_id)
+    record = _outcome(_valid_candidate(name), outcome, criterion, None)
+    migrate()
+    store = _read_store()
+    if track_id in store["tracks"]:
+        raise ValueError("track ID already exists")
+    record.update(id=track_id, name=_short(name, "name"), track_status="active")
+    store["tracks"][track_id] = record
+    _atomic_write(store)
+    return record
+
+
+def get_track(track_id: str) -> dict:
+    validate_track_id(track_id)
+    for track in list_tracks()["tracks"]:
+        if track["id"] == track_id:
+            return track
+    raise ValueError("unknown track")
+
+
+def set_focus(track_id: str | None) -> dict:
+    from session import load_session, park_session, restore_snapshot, assert_safe_snapshots, SessionError
+    if track_id is not None:
+        get_track(track_id)
+    path = _path().with_name("active_session.json")
+    assert_safe_snapshots(path)
+    current = load_session(path)
+    if current and current.data.get("grade_state") == "pending":
+        raise SessionError("pending grade: reconcile before switching focus")
+    migrate()
+    store = _read_store()
+    if store["focus"] == track_id:
+        if not current and track_id:
+            restore_snapshot(track_id, path)
+        return show()
+    if current:
+        park_session(current, path)
+    store["focus"] = track_id
+    _atomic_write(store)
+    if track_id:
+        restore_snapshot(track_id, path)
+    return show()
+
+
+def set_track_status(track_id: str, status: str, confirmed: bool = False) -> dict:
+    if status not in ("active", "completed", "archived") or not confirmed:
+        raise ValueError("explicit user confirmation required for track status")
+    get_track(track_id)
+    migrate()
+    store = _read_store()
+    store["tracks"][track_id]["track_status"] = status
+    store["tracks"][track_id]["updated_at"] = _now().isoformat()
+    _atomic_write(store)
+    return store["tracks"][track_id]
 
 
 def show() -> dict:
@@ -186,6 +301,21 @@ def mark_asked(because: str | None = None) -> dict:
 
 
 def _write(data: dict) -> dict:
+    store = _read_store()
+    if store and store.get("version") == 3:
+        focus = store["focus"]
+        if focus is None:
+            raise ValueError("select a focus or create a named track first")
+        previous = store["tracks"][focus]
+        data.update(id=focus, name=data.get("candidate", previous["name"]), track_status=previous["track_status"])
+        store["tracks"][focus] = data
+        _atomic_write(store)
+    else:
+        _atomic_write(data)
+    return show()
+
+
+def _atomic_write(data: dict) -> None:
     path = _path()
     path.parent.mkdir(parents=True, exist_ok=True)
     name = None
@@ -200,7 +330,6 @@ def _write(data: dict) -> dict:
     finally:
         if name and os.path.exists(name):
             os.unlink(name)
-    return show()
 
 
 def _short(value: str, name: str) -> str:
@@ -232,16 +361,21 @@ def propose(candidate: str, outcome: str = "", criterion: str = "") -> dict:
     previous = _read()
     if previous and previous["status"] != "expired":
         raise ValueError("existing strategy: use revise or expire first")
-    return _write(_outcome(candidate, outcome, criterion, previous))
+    update = _outcome(candidate, outcome, criterion, previous)
+    if previous:
+        update["history"] = previous.get("history", []) + [{k: v for k, v in previous.items() if k != "history"}]
+    return _write(update)
 
 
 def confirm(revision: int) -> dict:
     data = _read()
-    if not data or data["status"] != "proposed" or data["revision"] != revision:
+    if not data or data["status"] not in ("proposed", "confirmed") or data["revision"] != revision:
         raise ValueError("confirmation requires the current proposed revision")
     now = _now()
     # Confirming ratifies the current version: the revision number does NOT
     # advance here (it counts roadmap versions, not write operations).
+    if data["status"] == "confirmed":
+        data.setdefault("confirmation_history", []).append({"revision": data["revision"], "updated_at": data["updated_at"], "review_due_at": data["review_due_at"]})
     data.update(status="confirmed", updated_at=now.isoformat(), review_due_at=(now + timedelta(days=TTL_DAYS)).isoformat())
     return _write(data)
 
@@ -257,7 +391,8 @@ def revise(candidate: str, revision: int, outcome: str = "", criterion: str = ""
     # Roadmap content survives a terminology-only revision of the SAME goal so
     # evidence is not lost — but evidence for one goal is never inherited by a
     # different one (capability proof does not transfer between outcomes).
-    if previous.get("roadmap") and previous.get("candidate") == candidate:
+    update["history"] = previous.get("history", []) + [{k: v for k, v in previous.items() if k != "history"}]
+    if previous.get("roadmap") and previous.get("outcome") == update["outcome"] and previous.get("criterion") == update["criterion"]:
         update["roadmap"] = previous["roadmap"]
     return _write(update)
 
@@ -297,6 +432,8 @@ def roadmap_evidence(entry_id: str, evidence: str, status: str = "evidenced") ->
     if not data or data["status"] != "confirmed":
         raise ValueError("roadmap requires a confirmed strategy")
     entry = _roadmap_entry(data, entry_id)
+    if entry.get("evidence"):
+        entry.setdefault("evidence_history", []).append({k: v for k, v in entry.items() if k != "evidence_history"})
     entry["evidence"] = _evidence(evidence, "evidence") or None
     entry["status"] = status if (entry["evidence"] and status == "evidenced") else "no_evidence"
     if entry["evidence"]:

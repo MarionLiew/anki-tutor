@@ -44,7 +44,7 @@ def main(argv: list[str] | None = None) -> int:
     pn = sub.add_parser("next", help="check whether the current concept can be closed")
     pn.add_argument("--first", required=True, choices=["correct", "partial", "wrong"])
     pn.add_argument("--latest", required=True, choices=["correct", "partial", "wrong"])
-    pn.add_argument("--transfer", required=True, choices=["not_needed", "not_asked", "failed", "passed"])
+    pn.add_argument("--transfer", required=True, choices=["not_needed", "not_asked", "failed", "passed", "assisted_correct"])
     pn.add_argument("--extension", default="same_concept", choices=["same_concept", "new_concept"])
     pn.add_argument("--budget-exhausted", action="store_true")
     pn.add_argument("--transfer-first-failed", action="store_true")
@@ -82,9 +82,23 @@ def main(argv: list[str] | None = None) -> int:
     clv.add_argument("--id", dest="concept_id", required=True)
     clv.add_argument("--verified", choices=LEVELS, help="record a higher verified level (evidence-backed)")
     clv.add_argument("--target", choices=LEVELS, help="set the level teaching aims at (a plan)")
+    for action in ("link", "unlink"):
+        cp = cact.add_parser(action)
+        cp.add_argument("concept_id"); cp.add_argument("track_id")
+    pd.add_argument("--track", dest="track_id", default=None)
 
     ps = sub.add_parser("strategy", help="explicit strategic goal profile (no inference)")
     actions = ps.add_subparsers(dest="strategy_action", required=True)
+    create = actions.add_parser("create")
+    create.add_argument("track_id"); create.add_argument("name")
+    create.add_argument("--outcome", required=True); create.add_argument("--criterion", required=True)
+    actions.add_parser("list")
+    actions.add_parser("migrate")
+    focus = actions.add_parser("focus")
+    focus.add_argument("track_id", nargs="?", help="omit to clear focus for temporary learning")
+    for action in ("complete", "archive", "activate"):
+        sp = actions.add_parser(action)
+        sp.add_argument("track_id"); sp.add_argument("--confirmed", action="store_true")
     for action in ("propose", "revise"):
         sp = actions.add_parser(action)
         sp.add_argument("candidate", help="the user's own goal line (alpha / Polymarket / gold are examples only)")
@@ -94,7 +108,7 @@ def main(argv: list[str] | None = None) -> int:
             sp.add_argument("--revision", type=int, required=True)
     for action in ("confirm", "expire"):
         actions.add_parser(action).add_argument("--revision", type=int, required=True)
-    actions.add_parser("show")
+    actions.add_parser("show").add_argument("--track", dest="track_id", default=None)
     pa = actions.add_parser("asked")  # tutor just proactively asked the user for direction
     pa.add_argument("--because", choices=["cron_delivery", "session_opening", "review_due"], required=True)
 
@@ -116,6 +130,7 @@ def main(argv: list[str] | None = None) -> int:
     start.add_argument("--mode", choices=["active_learning", "passive_review", "quick_quiz"], default="active_learning")
     start.add_argument("--task", default="", help="current user-chosen deliverable, not inferred")
     start.add_argument("--bottleneck", default="")
+    start.add_argument("--temporary", action="store_true", help="learn without a Track")
     ask = steps.add_parser("ask")
     ask.add_argument("concept_id"); ask.add_argument("question")
     ask.add_argument("--objective", choices=["L0", "L1", "L2", "L3"], default="L1")
@@ -135,8 +150,9 @@ def main(argv: list[str] | None = None) -> int:
     close.add_argument("--reason", choices=["session_complete", "budget_exhausted", "user_request", "missing_concept"], default="session_complete")
     clock = steps.add_parser("time")
     clock.add_argument("seconds", type=int, help="explicit observed active study seconds, never wall waiting")
-    for step in ("show", "resume"):
-        steps.add_parser(step)
+    steps.add_parser("show")
+    steps.add_parser("snapshots")
+    steps.add_parser("resume").add_argument("--snapshot", default=None)
 
     po = sub.add_parser("observe", help="bounded learning metadata + current scoped chat")
     obs = po.add_subparsers(dest="observe_action", required=True)
@@ -146,7 +162,9 @@ def main(argv: list[str] | None = None) -> int:
 
     args = p.parse_args(argv)
     try:
-        return _dispatch(args)
+        from session import state_lock
+        with state_lock(_session_path()):
+            return _dispatch(args)
     except AnkiConnectUnreachable as e:
         print(json.dumps({"ok": False, "unreachable": True, "error": str(e)}))
         return 2
@@ -216,12 +234,41 @@ def _session_dispatch(args) -> int:
     path = _session_path()
     action = args.session_action
     current = load_session(path)
+    from session import assert_safe_snapshots
+    if action not in ("show", "snapshots", "reconcile"):
+        assert_safe_snapshots(path)
+    if action == "snapshots":
+        snapshots = []
+        for file in sorted((path.parent / "paused_sessions").glob("*.json")):
+            paused = load_session(file)
+            if paused:
+                snapshots.append({"key": file.stem, "session_id": paused.session_id, "track_id": paused.data.get("track_id"), "concept_id": paused.current_concept})
+        print(json.dumps({"snapshots": snapshots}, ensure_ascii=False))
+        return 0
+    if action == "resume" and not current and not args.snapshot:
+        args.snapshot = strategy.show().get("id")
+    if action == "resume" and args.snapshot:
+        from session import restore_snapshot
+        s = restore_snapshot(args.snapshot, path)
+        if not s:
+            raise SessionError("no paused snapshot")
+        print(json.dumps(s.to_dict(), ensure_ascii=False))
+        return 0
+    if current and current.data.get("grade_state") == "pending" and action not in ("show", "reconcile"):
+        raise SessionError("pending grade: reconcile before changing session")
     if action == "start":
+        if current and current.status == "paused":
+            from session import park_session
+            park_session(current, path)
+            current = None
         if current is not None:
             raise SessionError("existing session: resume or close it before starting another")
         goal = strategy.show()
         s = new_session(args.mode, concept_queue=[args.concept_id], concept={"concept_id": args.concept_id})
-        s.data["strategy_revision"] = goal.get("revision") if goal.get("status") == "confirmed" and not goal.get("due_for_review") else None
+        s.data["track_id"] = None if args.temporary else goal.get("id")
+        if s.data["track_id"] and (path.parent / "paused_sessions" / (s.data["track_id"] + ".json")).exists():
+            raise SessionError("paused snapshot exists for focus: resume it or use --temporary")
+        s.data["strategy_revision"] = goal.get("revision") if not args.temporary and goal.get("status") == "confirmed" and not goal.get("due_for_review") else None
         s.data["task"] = args.task
         s.data["bottleneck"] = args.bottleneck
         try:
@@ -273,6 +320,9 @@ def _session_dispatch(args) -> int:
                         # Preserve the session even if its Hermes transcript moved.
                         pass
                 s.pause(path, reason=args.reason)
+                if s.data.get("track_id"):
+                    from session import park_session
+                    park_session(s, path)
                 _note("learning_paused", session_id=s.session_id, concept_id=s.current_concept,
                       reason=args.reason)
                 log_event("learning_paused", session_id=s.session_id, mode=s.mode,
@@ -327,13 +377,13 @@ def _session_dispatch(args) -> int:
                 raise SessionError("concept exists; missing_concept recovery refused")
             if s.status not in ("graded", "paused") and args.reason not in ("missing_concept", "budget_exhausted", "user_request"):
                 raise SessionError("ungraded active session: pause instead of closing")
-            if s.data.get("grade_state") == "pending" and args.reason != "missing_concept":
+            if s.data.get("grade_state") == "pending":
                 # A pending grade may or may not have reached Anki. Closing here
                 # would drop the marker and let the same concept be graded again,
                 # writing a second review — reconcile first (doc §11).
                 raise SessionError(
                     "grade submission outcome is uncertain (pending): check Anki before closing, "
-                    "or close with --reason missing_concept once the concept is verified absent"
+                    "including missing_concept recovery; never discard pending evidence"
                 )
             archive = path.parent / "closed_sessions" / (s.session_id + ".json")
             s.data["closure_reason"] = args.reason
@@ -406,6 +456,10 @@ def _concept_from_args(args) -> dict:
 
 def _concept_dispatch(args, svc: ConceptService) -> int:
     action = args.concept_action
+    if action in ("link", "unlink"):
+        method = svc.link_track if action == "link" else svc.unlink_track
+        print(json.dumps({"ok": True, "concept": method(args.concept_id, args.track_id)}, ensure_ascii=False))
+        return 0
     if action == "error":
         c = svc.record_error(args.concept_id, args.type)
         log_event("concept_error_recorded", concept_id=args.concept_id, error_type=args.type)
@@ -443,8 +497,18 @@ def _dispatch(args) -> int:
         return _session_dispatch(args)
     if args.cmd == "strategy":
         action = args.strategy_action
-        if action == "show":
-            result = strategy.show()
+        if action == "create":
+            result = strategy.create_track(args.track_id, args.name, args.outcome, args.criterion)
+        elif action == "list":
+            result = strategy.list_tracks()
+        elif action == "migrate":
+            result = strategy.migrate()
+        elif action == "focus":
+            result = strategy.set_focus(args.track_id)
+        elif action in ("complete", "archive", "activate"):
+            result = strategy.set_track_status(args.track_id, {"complete": "completed", "archive": "archived", "activate": "active"}[action], args.confirmed)
+        elif action == "show":
+            result = strategy.get_track(args.track_id) if args.track_id else strategy.show()
         elif action == "asked":
             result = strategy.mark_asked(getattr(args, "because", None)) or {"status": "unconfirmed", "candidates": list(strategy.CANDIDATES)}
         elif action == "roadmap":
@@ -512,7 +576,7 @@ def _dispatch(args) -> int:
         return 0
 
     if args.cmd == "search":
-        print(json.dumps(svc.search(topic=args.topic, level=args.level, query=args.query), ensure_ascii=False))
+        print(json.dumps(svc.search(topic=args.topic, level=args.level, query=args.query, track_id=args.track_id), ensure_ascii=False))
         return 0
 
     if args.cmd == "grade":

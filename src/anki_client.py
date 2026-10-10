@@ -240,7 +240,7 @@ class AnkiClient:
         Returns note dicts with an extra "_card_ids" key. Excludes retired /
         merged notes via the Status field search.
         """
-        card_ids = self.find_cards(f'deck:"{deck}" is:due')
+        card_ids = self.find_cards(f'deck:"{deck}" is:due -is:suspended')
         if not card_ids:
             return []
         infos = self.cards_info(card_ids)

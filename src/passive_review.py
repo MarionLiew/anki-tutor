@@ -1,7 +1,7 @@
 """passive_review.py — deterministic Phase-3 entry point for Cron.
 
 Does everything that must NOT be left to improvisation (doc §8):
-  1. If an active Review Session exists -> resume it (never create a second).
+  1. Existing foreground -> skip without resending; paused -> dormant snapshot.
   2. Else query due + active Concepts (max 3).
   3. Else if none due -> report "nothing to teach" and stop.
   4. Else create a Review Session, persist it, and emit the FIRST concept's
@@ -15,6 +15,7 @@ When AnkiConnect is unreachable it says so plainly; it never fabricates state.
 from __future__ import annotations
 
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -25,7 +26,7 @@ from anki_client import AnkiClient, AnkiConnectUnreachable  # noqa: E402
 from concept_service import note_to_concept  # noqa: E402
 from config import DECK, SESSION_POLICY, ensure_dirs  # noqa: E402
 from events import log_event
-from session import load_session, new_session
+from session import load_session, new_session, park_session, assert_safe_snapshots, state_lock, SessionError
 import observation  # noqa: E402
 import strategy  # noqa: E402
 
@@ -33,47 +34,47 @@ import strategy  # noqa: E402
 PAUSED_REMINDER_AFTER_SECONDS = 24 * 60 * 60
 
 
+def session_path() -> Path:
+    from config import ACTIVE_SESSION_PATH
+    return Path(os.environ.get("ANKITUTOR_STATE", str(ACTIVE_SESSION_PATH.parent))) / "active_session.json"
+
+
 def run(limit: int = SESSION_POLICY["target_concepts"], now_epoch: float | None = None) -> dict:
+    with state_lock(session_path()):
+        try:
+            assert_safe_snapshots(session_path())
+            return _run(limit, now_epoch)
+        except SessionError as exc:
+            return {"action": "skip", "reason": "unsafe_session_state", "error": str(exc)}
+
+
+def _run(limit: int, now_epoch: float | None) -> dict:
+    if type(limit) is not int or limit < 1:
+        raise SessionError("review limit must be a positive integer")
+    limit = min(limit, SESSION_POLICY["target_concepts"])
     ensure_dirs()
 
-    # 1. resume, never double-create
+    # 1. Preserve one foreground, never double-create or infer delivery.
     active = load_session()
+    if active and active.data.get("grade_state") == "pending":
+        return {"action": "skip", "reason": "pending_grade", "session_id": active.session_id}
     if active and active.status == "paused":
-        paused_at = active.data.get("paused_at_epoch")
-        now = time.time() if now_epoch is None else now_epoch
-        if paused_at is None or now - float(paused_at) >= PAUSED_REMINDER_AFTER_SECONDS:
-            if active.data.get("paused_reminder_sent"):
-                return {"action": "skip", "reason": "paused_reminder_already_sent"}
-            active.data["paused_reminder_sent"] = True
-            active.save()
-            return {
-                "action": "remind_paused",
-                "reason": "paused_session_due_for_reminder",
-                "session_id": active.session_id,
-                "pause_reason": active.data.get("pause_reason", "unknown"),
-                "current_concept": active.current_concept,
-                "current_question": active.data.get("current_question"),
-                "note": "Send one light reminder. Keep the session paused; do not auto-resume or create a second session.",
-            }
-        return {
-            "action": "skip", "reason": "session_paused",
-            "session_id": active.session_id,
-            "pause_reason": active.data.get("pause_reason", "unknown"),
-            "note": "Paused less than 24 hours; do not remind on the same day.",
-        }
+        park_session(active, session_path())
+        active = None
     if active and active.status in ("answer_received", "diagnosing", "graded"):
         return {"action": "skip", "reason": "question_already_answered",
                 "session_id": active.session_id}
     if active and active.status in ("asking", "waiting_answer", "verifying_transfer"):
         return {
-            "action": "resume",
+            "action": "skip",
+            "reason": "foreground_session_exists",
             "session_id": active.session_id,
             "current_concept": active.current_concept,
             "current_question": active.data.get("current_question"),
             "attempt": active.attempt,
             "hint_level": active.hint_level,
             "questions_used": active.questions_used,
-            "note": "existing session — resume, do not create a new one",
+            "note": "existing foreground — do not resend its question or create a new session",
         }
 
     # 2. query due
@@ -85,6 +86,22 @@ def run(limit: int = SESSION_POLICY["target_concepts"], now_epoch: float | None 
         return {"action": "skip", "reason": "anki_unreachable", "error": str(e)}
 
     if not due_notes:
+        for file in sorted((session_path().parent / "paused_sessions").glob("*.json")):
+            from session import load_session as load_snapshot
+            paused = load_snapshot(file)
+            now = time.time() if now_epoch is None else now_epoch
+            stamp = paused.data.get("paused_at_epoch")
+            if stamp is not None and now - float(stamp) < PAUSED_REMINDER_AFTER_SECONDS:
+                continue
+            if paused.data.get("paused_reminder_prepared") or paused.data.get("paused_reminder_sent"):
+                continue
+            paused.data["paused_reminder_prepared"] = True
+            paused.save(file)
+            return {"action": "remind_paused", "reason": "paused_session_due_for_reminder",
+                    "session_id": paused.session_id, "snapshot": file.stem,
+                    "current_concept": paused.current_concept,
+                    "current_question": paused.data.get("current_question"),
+                    "note": "One optional light reminder prepared, NOT delivery evidence; keep snapshot dormant."}
         log_event("passive_review_no_due")
         return {"action": "skip", "reason": "no_due_concepts",
                 "note": "no due Concepts — do not force teaching (§8.1)"}
@@ -93,12 +110,15 @@ def run(limit: int = SESSION_POLICY["target_concepts"], now_epoch: float | None 
     concepts = []
     for n in due_notes:
         c = note_to_concept(n)
+        if any(existing["concept_id"] == c["concept_id"] for existing in concepts):
+            raise SessionError("duplicate ConceptID in due notes; reconcile identity before teaching")
         c["card_ids"] = n.get("_card_ids") or []
         concepts.append(c)
     queue = [c["concept_id"] for c in concepts]
     first = concepts[0]
 
     sess = new_session("passive_review", concept_queue=queue, concept=first)
+    sess.data["track_id"] = None
     try:
         sess.data["observation_binding"] = observation.bind()
     except (ValueError, OSError):

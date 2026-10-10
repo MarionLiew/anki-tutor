@@ -14,6 +14,18 @@ metadata:
 
 # AnkiTutor Skill
 
+权威原则：[学习与记忆约定](docs/learning-contract.md)；工程维护约定入口：根目录 `AGENTS.md`。
+本文件保留教学操作入口和案例细则，不另设记忆调度或掌握度数据库。
+
+## 多 Track 操作入口
+- `strategy migrate`：备份旧 strategy 后幂等迁移到 `legacy` Track，不从日志推断能力。
+- `strategy create quant "量化研究" --outcome "独立验证策略假设" --criterion "重跑审计通过"` 创建提议，不自动选择 Focus；`strategy list` / `strategy show --track quant` 查看。
+- 用户选择后 `strategy focus quant`；`strategy confirm --revision N`、`revise`、`roadmap` 沿用旧命令，作用于当前 Focus。`strategy focus` 无参数清空 Focus，临时学习可 `session start <id> --temporary`。
+- 切换 Focus 先保存旧 Session 到 `state/paused_sessions/`，切回恢复原题与全部证据；`session snapshots` 列表，`session resume --snapshot <track-id-or-session-id>` 显式恢复，不能覆盖前台。
+- `concept link <concept-id> <track-id>` / `concept unlink ...` 仅增删该 `track::<id>` 标签；`search --track <id>` 仅供主动学习筛选，不用于 Cron。
+- 用户明确验收后 `strategy complete <id> --confirmed` / `archive` / `activate`，不触碰 Anki Concept、标签或 FSRS。
+- pending 评分阻止暂停、关闭（包括 missing_concept）、切换和新教学；仅 `session reconcile` 只读核验，不重试评分。
+
 
 ## 审计后的教学与持久化契约
 - 新稳定概念先 `search "检索词" --topic research --level L0`，复用或创建带来源/判定标准的概念。先成功登记 `session ask` 再出题；CLI 非零退出必须停教修复，不能在聊天绕过。
@@ -37,7 +49,8 @@ metadata:
 ## SOURCE OF TRUTH（数据职责边界）
 - **Anki**：Concept、复习历史、FSRS 调度 —— 长期学习状态的唯一事实源。
 - **Source Library**：原始学习资料与出处 —— 知识的唯一事实源（`library/`）。
-- **TutorSession**：只保存当前一轮短期状态（`state/active_session.json`）。
+- **Track**：长期目标、Roadmap 与独立验收证据（`state/strategy.json`）。
+- **TutorSession**：唯一前台（`state/active_session.json`）及不运行的暂停快照（`state/paused_sessions/`）。
 - **绝不维护第二套 FSRS / next_review / mastery 数据库**（doc §3/§9）。
 
 ## 导师视角（融入交流，不另设角色）
@@ -79,7 +92,7 @@ anki-tutor/
 
 ## 触发即执行的步骤
 1. 先 `python3 src/cli.py strategy show`；只有 `status=confirmed` 且未到复核日，才把该目标作为当前主线。未确认时可以按用户指定的具体主题学习，但不得从曾提到的兴趣推定优先级；目标提议须写 `--outcome`（终局结果陈述）/`--criterion`，用户明确确认后才运行 `strategy confirm --revision N`。
-   - **unconfirmed 时要主动问方向**：goal 为 unconfirmed 且 `should_ask_direction=true` 时，导师应在一次学习开场或 Cron 投递的第一句话里问一次「你当前主要想推进哪个方向（alpha / Polymarket / 黄金，或其他）」，用户答复后 `strategy propose + confirm`，随后 `strategy asked --because session_opening|cron_delivery` 记录已问。之后 7 天内不再重复问（`should_ask_direction` 会变 false）；用户不答或岔开就照常教学，沉默不是拒绝。confirmed 后永远不再问。
+   - **unconfirmed 时可轻问方向**：`should_ask_direction=true` 时问一次用户想推进的路线；用户明确要长期目标时才 `strategy create <id> <name> --outcome ... --criterion ...`、`strategy focus <id>`，用户确认后 `strategy confirm --revision N`。随后 `strategy asked --because session_opening|cron_delivery` 记录已问，7 天内不重复。用户仅指定临时主题则 `session start --temporary`，不强制建 Track；沉默不是确认。
    - **每次学习顺带轻核对**：每次进入学习/Cron 投递本来就先跑 `strategy show`——返回里 `due_for_review=true` 时用一句「目标 到期复核：这条主线还成立吗？」顺带问一下即可，不打断节奏；用户确认后 `strategy confirm --revision N`（同版本再确认，revision 不变）或 `strategy revise` 更新措辞（revision+1）。**不等月末专门打断，也不建独立 Cron 提醒**。
    - **roadmap 登记**：confirm 后提议一条能力链（`strategy roadmap add <capability>`），每产生经核验的产出物或真实判断后 `strategy roadmap evidence <entry_id> "<证据>"`。选下一个教学主题看 `strategy roadmap gap`。
 2. **AnkiConnect 可用性**：`python3 src/cli.py health`。不可达 → 停止本轮并修复；保留未评分证据，明确未持久化。
@@ -103,7 +116,7 @@ anki-tutor/
 6. 每轮一个 Concept 走完（→ 诊断 → 必要时迁移验证）后，`cli.py grade` 回写 + 必要时 `record_error` / `set_level`。
 
 ## PASSIVE REVIEW（被动复习 / Cron）
-1. 先检查现有 Session：当天暂停不打扰；暂停满 24 小时后发送一次轻提醒，但保持 paused，不自动恢复、不新建第二个 Session。没有 Session 时再用 `python3 src/cli.py due --limit 3` 查 active + due 的 Concept（一次最多 3 个）。
+1. 用 `python3 src/passive_review.py` 走确定性入口：pending/损坏状态先阻塞；前台已有题就 skip，不重发。暂停旧 Session 保存为不运行的快照，释放入口后查所有 active、due、未 suspend 的 Concept（最多 3 个），不按 Focus 或 Track 标签筛选。
 2. 读取 CoreKnowledge / Level / CommonErrors / SourceRefs。
 3. 创建/恢复 Review Session（`state/`）。
 4. **只生成并发送当前第 1 题**；后续由用户回答驱动（§8：Cron 绝不连续推整组题，绝不输出长篇课程）。若无 due 概念则不强行教学。
@@ -125,13 +138,13 @@ anki-tutor/
 
 ## PROGRESSION（延伸题与换题闸门）
 - 先区分延伸题：`same_concept` 是当前概念的新情境验证；`new_concept` 是另一知识点，不能用它答对来补前一概念的证据。
-- 每次答题诊断后运行 `python3 src/cli.py next --first <correct|partial|wrong> --latest <correct|partial|wrong> --transfer <not_needed|not_asked|failed|passed> [--extension new_concept] [--transfer-first-failed] [--budget-exhausted]`。`first` 是当前目标首次独立作答；说「不会」算 wrong。CLI 返回 action 与建议 grade，不自动写入 Anki。
+- 每次答题诊断后运行 `python3 src/cli.py next --first <correct|partial|wrong> --latest <correct|partial|wrong> --transfer <not_needed|not_asked|failed|passed|assisted_correct> [--extension new_concept] [--transfer-first-failed] [--budget-exhausted]`。提示后迁移答对记 assisted_correct，不是独立通过；CLI 返回建议，不自动评分。
 - `repair_current`/`probe_current`：只给最小提示或短追问，不切到新概念；`ask_transfer`：出一题新情境，不复述答案；`close_concept`/`close_then_introduce`：先核对并回写当前概念评分，再进入下一概念；`close_with_gap`：预算耗尽，按未掌握结案、明示缺口，不继续追问。
 - 延伸题答错后若用户立刻自行纠正，认可修正但仍核验关键区别；当前目标层级的迁移首次失败应加 `--transfer-first-failed`，不能因为后续修正记 Good。`transfer=not_needed` 只适用于当前目标无需迁移的情况，不能替代 L2 应用验证。
 - 「大概懂了」「继续」不是通过证明；尚未验证就给短变式，不用一大段讲义替代检索。解释用户明确问的公式或实务应用时分层回答，先给核心，再按需展开。
 - **判定先于换题**：用户自我修正值得肯定，但若仍混淆“题目假定的真实效果”与现实中观察到的样本差异，不能说“这题过了”。先用陌生场景短追问验证核心区别；只依据真实作答登记 verdict，不补写历史答题、不凭聊天宣称 Anki 已评分。
 - **概率题先封存预测时点**：不要写“对最终发生的事件报高概率”来暗示事后知道结果；改为“预测时点前冻结概率，事后按档统计”。区分校准、区分度和增量价值。10 场里报 90% 而发生 6 场是过度自信的警讯，不足以证实长期失准；原题若有多个成立答案，承认题目歧义并修题。
-- 换到无关话题就 `session pause --reason topic_switch`；Cron 对 paused 返回 skip 时不发题、不自动恢复。用户明确回到学习后先 `session show`/`session resume`，保留未评分的原概念；更换新概念不把旧概念当作已掌握。
+- 换到无关话题就 `session pause --reason topic_switch`；Track 快照不自动恢复，也不阻止其他到期概念复习。用户明确返回后用 `session snapshots` / `session resume --snapshot <key>`，不能覆盖已有前台；未评分不等于掌握。
 
 ## LEVEL（§7.1）
 Level = **"已验证的最高能力层级"**（L0 识别 / L1 回忆 / L2 应用 / L3 构造）。
@@ -152,7 +165,7 @@ Level = **"已验证的最高能力层级"**（L0 识别 / L1 回忆 / L2 应用
 - 生命周期：**默认 retire/suspend，不删除有复习历史的 Concept**；只有明确垃圾且未复习、或用户明确确认，才允许 delete_unreviewed(confirm=True)。
 
 ## CRON（Phase 3）
-每日投递 `passive_review`：若已有 paused Session，当天保持静默；暂停满 24 小时后只发一条轻提醒，仍不恢复、不创建第二个；其他 active Session → 返回当前题供用户驱动；否则查 due，最多 3 个，建 Review Session 并只发第 1 题。Cron 自身不判断 mastery、不直接决定 Level、不独立推进题目状态（§8）。
+Cron 行为以 PASSIVE REVIEW 的确定性入口为准。无到期概念且无前台时，暂停满 24 小时的快照可准备一次轻提醒；`paused_reminder_prepared` 只表示已准备，不声称微信送达。正常到期复习优先，不自动恢复快照。
 
 ## 失败处理（doc §13/§16）
 | 故障 | 行为 |
@@ -161,8 +174,8 @@ Level = **"已验证的最高能力层级"**（L0 识别 / L1 回忆 / L2 应用
 | ConceptID 冲突 | 停止自动创建；读两个对象 → merge 或人工选择 |
 | PDF 解析失败 | manifest 标 failed；**不产生无来源 Concept** |
 | LLM 无法可靠评开放题 | 降级为追问/让用户解释；不强写 Easy/Good |
-| Session 状态损坏/缺失 | 不猜用户正在答哪题；回退到最近 Concept，明确重开该题 |
-| Cron 重复触发 | 已有 active Session → 恢复/轻提醒，不新建 |
+| Session 状态损坏 | 停止并保留文件，人工核验后恢复，不覆盖未知证据 |
+| Cron 重复触发 | 已有前台 Session → skip，不新建、不重发 |
 
 ## 隐私与安全（§16）
 - AnkiConnect 仅绑定 127.0.0.1；不暴露公网。
