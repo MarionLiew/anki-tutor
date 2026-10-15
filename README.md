@@ -182,3 +182,15 @@ Report reproducible bugs or submit a pull request; run the offline tests before 
 SPDX license identifier: `MIT`.
 
 MIT © 2026 Marion Liew. See [LICENSE](LICENSE).
+## Cross-chat learning and one-command audit
+
+AnkiTutor accepts Markdown learning handoffs from ChatGPT or any other assistant, using the existing Source Library instead of creating decks blindly:
+
+```bash
+python3 src/cli.py handoff import /path/to/handoff.md
+python3 src/cli.py handoff list
+python3 src/cli.py audit export
+python3 src/cli.py audit export --include-code  # optional engineering snapshot
+```
+
+Audit v2 contains a concise `审计入口.md`, machine-readable `summary.json`, a SHA-256 `manifest.json`, and original learning evidence. It reads only managed AnkiTutor cards and never writes grading/FSRS. **Audit ZIPs contain sensitive personal learning data: do not commit or publish.** See [Learning Handoff and Audit v2](docs/learning-exchange.md).
