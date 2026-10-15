@@ -171,3 +171,15 @@ AnkiTutor 不是又一个 Anki，不是独立导师 Bot，也不是 LMS。它是
 SPDX 许可标识：`MIT`。
 
 MIT © 2026 Marion Liew。见 [LICENSE](LICENSE)。
+## 跨聊天学习同步与快捷审计导出
+
+从任意 AI 对话生成以 `# Learning Handoff` 或 `# 学习交接` 开头的 Markdown 学习交接单，交给 Hermes 运行：
+
+```bash
+python3 src/cli.py handoff import /path/to/handoff.md
+python3 src/cli.py handoff list
+python3 src/cli.py audit export
+python3 src/cli.py audit export --include-code  # 代码级深度审计时使用
+```
+
+交接只入 Source Library，不自动建卡、评分或改变 Track Focus。审计 ZIP v2 包括精简入口、结构化摘要、SHA-256 校验及学习原始证据；仅读取 AnkiTutor 管理的概念卡，不修改 FSRS。审计包含个人学习数据，**勿提交 GitHub 或公开分享**。格式与限制见 [跨聊天交接与审计导出](docs/learning-exchange.md)。
