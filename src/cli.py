@@ -41,6 +41,16 @@ def main(argv: list[str] | None = None) -> int:
     pr = sub.add_parser("retire"); pr.add_argument("concept_id"); pr.add_argument("--reason", default="")
     pm = sub.add_parser("merge"); pm.add_argument("source_id"); pm.add_argument("canonical_id")
     pi = sub.add_parser("ingest"); pi.add_argument("path"); pi.add_argument("--title", default=None); pi.add_argument("--list", action="store_true", default=False)
+    paudit = sub.add_parser("audit", help="export a read-only learning audit ZIP")
+    audit_actions = paudit.add_subparsers(dest="audit_action", required=True)
+    audit_export = audit_actions.add_parser("export")
+    audit_export.add_argument("--output", help="ZIP path (default: Downloads/learning-audit-TIMESTAMP.zip)")
+    audit_export.add_argument("--include-code", action="store_true", help="include documented source-code snapshot")
+    handoff = sub.add_parser("handoff", help="receive a learning goal from any chat")
+    handoff_actions = handoff.add_subparsers(dest="handoff_action", required=True)
+    handoff_import = handoff_actions.add_parser("import")
+    handoff_import.add_argument("path", help="Markdown Learning Handoff from an external chat")
+    handoff_actions.add_parser("list")
     pn = sub.add_parser("next", help="check whether the current concept can be closed")
     pn.add_argument("--first", required=True, choices=["correct", "partial", "wrong"])
     pn.add_argument("--latest", required=True, choices=["correct", "partial", "wrong"])
@@ -168,7 +178,7 @@ def main(argv: list[str] | None = None) -> int:
     except AnkiConnectUnreachable as e:
         print(json.dumps({"ok": False, "unreachable": True, "error": str(e)}))
         return 2
-    except (ConceptError, IngestError, SessionError, ValueError, AnkiConnectError) as e:
+    except (ConceptError, IngestError, SessionError, ValueError, AnkiConnectError, OSError) as e:
         print(json.dumps({"ok": False, "error": str(e)}), file=sys.stderr)
         return 1
 
@@ -491,6 +501,44 @@ def _concept_dispatch(args, svc: ConceptService) -> int:
 
 
 def _dispatch(args) -> int:
+    if args.cmd == "audit":
+        from audit_export import export_audit
+        from datetime import datetime
+        downloads = Path.home() / "Downloads"
+        default_dir = downloads if downloads.is_dir() else Path(__file__).resolve().parent.parent / "exports"
+        timestamp = datetime.now().astimezone().strftime("%Y%m%d-%H%M%S")
+        output = Path(args.output).expanduser() if args.output else default_dir / f"learning-audit-{timestamp}.zip"
+        path = export_audit(output, include_code=args.include_code)
+        print(json.dumps({"ok": True, "path": str(path), "format_version": 2, "sensitive": True}, ensure_ascii=False))
+        return 0
+    if args.cmd == "handoff":
+        lib = SourceLibrary(LIBRARY_DIR)
+        if args.handoff_action == "list":
+            rows = [{"source_id": x.get("source_id"), "title": x.get("title"),
+                     "updated_at": x.get("updated_at"), "status": x.get("status")}
+                    for x in lib.list_manifests() if x.get("kind") == "learning_handoff"]
+            print(json.dumps({"ok": True, "handoffs": rows}, ensure_ascii=False))
+            return 0
+        path = Path(args.path).expanduser()
+        if path.suffix.lower() != ".md":
+            raise ValueError("Learning Handoff must be a Markdown .md file")
+        text_body = path.read_text(encoding="utf-8")
+        if not text_body.lstrip().lower().startswith(("# learning handoff", "# 学习交接")):
+            raise ValueError("expected '# Learning Handoff' or '# 学习交接' heading")
+        result = IngestService(lib).ingest(path)
+        if "failed" in result:
+            raise IngestError(result["failed"])
+        original = result.get("deduplicated") or result.get("manifest")
+        if not isinstance(original, dict):
+            raise IngestError("import returned no source manifest")
+        source_id = original["source_id"]
+        manifest = lib.load_manifest(source_id)
+        manifest["kind"] = "learning_handoff"
+        lib.save_manifest(source_id, manifest)
+        print(json.dumps({"ok": True, "source_id": source_id,
+                          "deduplicated": bool(result.get("deduplicated")),
+                          "message": "Imported as source only; no Anki cards or grades created"}, ensure_ascii=False))
+        return 0
     if args.cmd == "observe":
         return _observe_dispatch(args)
     if args.cmd == "session":
