@@ -22,3 +22,6 @@ secrets/
 
 # os
 .DS_Store
+# private learning audit exports (never commit learning records)
+exports/
+learning-audit-*.zip
