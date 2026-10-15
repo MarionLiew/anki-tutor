@@ -184,3 +184,8 @@ Cron 行为以 PASSIVE REVIEW 的确定性入口为准。无到期概念且无�
 
 ## 测试与验收
 `cd anki-tutor && python3 -m pytest tests/ -q`（mock AnkiConnect，离线可跑）；对真实 Anki 可用 `src/cli.py` 各子命令冒烟。验收对齐文档 AC-01~AC-09 / T01~T13（见 tests/ 注释）。
+## 跨聊天学习交接与快捷审计导出
+
+- 用户说“同步到 AnkiTutor / 学这个”：将来源、学习动机、预期能力、验收标准、待核验事实写入以 `# Learning Handoff`（或 `# 学习交接`）开头的本地 Markdown；执行 `python3 src/cli.py handoff import <path>`；确认 CLI 返回成功后才报告已摄入。只入 Source Library，不等于创建 Concept、学习或评分。后续教学沿用本 Skill 的概念去重与动态提问。
+- 用户说“导出学习审计包 / 把学习记录打包”：执行 `python3 src/cli.py audit export`，按回执给出真实 ZIP 路径；需要工程审计可加 `--include-code`。Anki 不可达就报告失败，禁止宣称导出成功。不要使用临时脚本替代确定性 CLI，也不要将真实审计包提交到 GitHub。
+- 审计格式 v2：`审计入口.md`、`summary.json`、`manifest.json`、原始来源、会话、受管理 Anki 概念与 revlog。不要把 Level、FSRS 复习或缺证据标签当作独立能力结论。详情：[docs/learning-exchange.md](docs/learning-exchange.md)。
