@@ -74,7 +74,7 @@ def _summary(strategy, session, notes, cards, reviews, created):
         rows.append({"id": tid, "name": track.get("name", tid),
                      "status": track.get("status"), "track_status": track.get("track_status"),
                      "required": sum(x.get("kind", "required") == "required" for x in track.get("roadmap", [])),
-                     "evidenced": statuses.get("evidenced", 0),
+                     "evidenced": sum(x.get("status") == "evidenced" and x.get("kind", "required") == "required" for x in track.get("roadmap", [])),
                      "no_evidence": statuses.get("no_evidence", 0)})
     levels = Counter(n.get("fields", {}).get("Level", {}).get("value", "unknown") for n in notes)
     ease = Counter(str(r.get("ease", "unknown")) for history in reviews.values() for r in history)
