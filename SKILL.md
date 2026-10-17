@@ -152,6 +152,12 @@ anki-tutor/
 - **概率题先封存预测时点**：不要写“对最终发生的事件报高概率”来暗示事后知道结果；改为“预测时点前冻结概率，事后按档统计”。区分校准、区分度和增量价值。10 场里报 90% 而发生 6 场是过度自信的警讯，不足以证实长期失准；原题若有多个成立答案，承认题目歧义并修题。
 - 换到无关话题就 `session pause --reason topic_switch`；Track 快照不自动恢复，也不阻止其他到期概念复习。用户明确返回后用 `session snapshots` / `session resume --snapshot <key>`，不能覆盖已有前台；未评分不等于掌握。
 
+## 下一 Concept 的增量价值检查（复用现有入口，不另建规划器）
+- 选题前读 `strategy show` / `strategy roadmap gap`、`session guidance`，再 `search --track <focus>` / `get <concept_id>` 核对现有 Concept 的 LearningObjective、Level、TargetLevel、Prerequisites、SourceRefs 和需要时的 Anki 复习证据。沿 SourceRefs 按需查 Source Library；来源未核实就保留不确定性。无关联标签不等于没有概念，跨 Track 前置仍先全局 search 去重。只读候选比较，不批建 Concept、不扩 Roadmap。
+- 当前真实任务优先，但聊天最近提到的细节不自动成为下一课。若已能独立完成当前目标，先按既有评分/结案闸门收尾，再比较现有 Roadmap 尚缺验收证据的能力与已学 Concept 的覆盖：选一个能补关键覆盖或解除依赖的 Concept，用一句话说明“它服务哪项能力、为何比再做同概念变式更有增量”。no_evidence 仅指缺验收证据，不代表不会；Level/复习次数也不证明独立研究能力。不输出虚构覆盖率。
+- 同一 Concept 已有多次真正陌生、无提示、独立迁移时，不再默认加一道换数字题；若仍需练习，明确本题要验证的新边界或新错误模型。guidance 的 >=2 只是边际价值提示，不是要求先刷满两题，也不是跨会话掌握证明。到期复习仍由 Anki 决定，不因停止本轮重复而跳过或改写 FSRS。
+- 真实任务暴露数学、资金费或微观结构缺口时，沿已有 Prerequisites 和任务证据选一个最小阻塞 Concept（未列前置不等于没有依赖）；先诊断再教，独立迁移通过后返回原研究产出，不长期只做观点挑错，也不把三类知识整套补课。缺少稳定 Concept 时才按现有来源/去重闸门逐个摄入，未成功登记不能旁路教学。
+
 ## 能力证据优先与研究回路
 - 进入先读取当前任务、roadmap 验收证据、Concept 及本轮首答/提示/迁移；证据不足用当前任务内的一道综合诊断，不默认从定义讲起，也不把 no_evidence 解释为不会。明确要求讲解时尊重用户。
 - `session guidance` 只读返回下一步依据；`session answer` 附带同样的 `teaching_guidance`，旧 `decision`/grade 契约不变。等待中的原题必须保留；unknown active time 返回 null，不从 4 题或墙钟推断速度。
