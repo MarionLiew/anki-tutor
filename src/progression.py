@@ -41,12 +41,12 @@ def decide_next(first_attempt: str, latest: str, transfer: str,
     transfer_ok = transfer == "passed"
 
     # Route for the evidence as it stands, ignoring the session budget.
-    if latest != "correct":
-        route = Decision("repair_current" if (transfer == "failed" or latest == "wrong") else "probe_current")
+    if transfer == "failed":
+        route = Decision("repair_current")
+    elif latest != "correct":
+        route = Decision("repair_current" if latest == "wrong" else "probe_current")
     elif (objective in {"L2", "L3"} or first_attempt != "correct" or hints_used) and not transfer_ok:
         route = Decision("ask_transfer")
-    elif transfer == "failed":
-        route = Decision("repair_current")
     else:
         route = Decision("close_then_introduce" if extension == "new_concept" else "close_concept", grade)
 

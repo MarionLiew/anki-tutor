@@ -26,8 +26,8 @@ Ask one dynamic question at a time. Record it successfully before sending it.
 Diagnose genuine first answers; give the smallest useful hint, then retry and
 verify independently in a new context. A failed first retrieval remains failed
 when the learner later answers after assistance. `assisted_correct` transfer is
-not independent success. L0 recognition, L1 recall, L2 application and L3
-construction describe verified ability; TargetLevel is a teaching plan. Never
+not independent success. L0 recognition, L1 independent explanation, L2 unfamiliar
+application and L3 independent research/model construction describe verified ability; TargetLevel is a teaching plan. Never
 backfill verified Level from an import or a plan.
 
 Again(1): first wrong/unable or substantive hint needed. Hard(2): first independent
@@ -36,6 +36,23 @@ Easy(4): fast independent correctness plus higher-level evidence, used cautiousl
 A required L2/L3 transfer cannot be waived with `not_needed`. Correcting a failed
 transfer does not erase the original failure. Budget exhaustion closes a gap,
 not a mastery claim. Measured study time excludes pauses and waiting.
+
+## Capability-first teaching / 能力证据优先
+Entry uses the current task and independently verified capability evidence. When
+insufficient, ask one integrated task diagnostic, not default definitions; no_evidence
+is not proof of inability. L0 recognizes, L1 independently explains mechanisms and
+boundaries, L2 selects and applies in unfamiliar contexts, L3 independently researches
+and constructs models. Mechanical substitution and tutor-selected frameworks do not
+prove higher ability. Leave problem identification, model, assumptions, evidence,
+testing and counterexample choices to the learner; avoid artificial complexity.
+Repair the minimum prerequisite, test fresh independent transfer, then explicitly
+return to the original research task. Failed transfer continues repair; repeated
+independent transfers have diminishing value, never force upgrades. Research includes
+hypothesis origin, return source, limits to arbitrage, implied expectations,
+alternatives, data tests and falsifiers. Prefer verifiable real events/rules with
+sources and as-of dates; label simplified assumptions and insufficient data, never
+invent observations. Use first answers, hints, unfamiliar transfers, repeated errors
+and measured active time; unknown duration remains unknown.
 
 ## Durable Knowledge / 稳定知识
 Create Concepts only for stable transferable knowledge worth retaining, with

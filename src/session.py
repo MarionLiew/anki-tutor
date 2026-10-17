@@ -176,10 +176,13 @@ class TutorSession:
         self.data.setdefault("answer_records", []).append({"verdict": verdict,
             "question": self.data["current_question"], "concept_id": self.current_concept,
             "rubric": rubric, "answer_text": answer_text, "spontaneous": spontaneous,
-            "hinted": hinted, "hint_sent_at": self.data.get("hint_sent_at"), "recorded_at": _now_iso()})
+            "hinted": hinted, "is_transfer": bool(self.data.get("is_transfer_question")),
+            "attempt": self.attempt,
+            "hint_sent_at": self.data.get("hint_sent_at"), "recorded_at": _now_iso()})
         evidence["hints_used"] = evidence["hints_used"] or hinted
         if self.data.get("is_transfer_question"):
             if verdict != "correct":
+                evidence["transfer_first_failed"] = True
                 evidence["transfer"] = "failed"
             elif hinted:
                 evidence["transfer"] = "assisted_correct"
@@ -201,6 +204,49 @@ class TutorSession:
                            extension=extension, budget_exhausted=budget_exhausted,
                            transfer_first_failed=e["transfer_first_failed"],
                            hints_used=e["hints_used"], objective=e["objective"])
+
+    def teaching_guidance(self) -> dict:
+        """Read-only teaching advice; no capability evaluation or state transition.
+
+        Legacy answer records without transfer/attempt metadata remain unknown.
+        The caller still verifies novelty, rubric and real-task evidence.
+        """
+        e = self.data.get("evidence") or {}
+        records = [r for r in self.data.get("answer_records", [])
+                   if r.get("concept_id") == self.current_concept]
+        independent = {r.get("question") for r in records
+                       if r.get("is_transfer") and r.get("attempt") == 1
+                       and r.get("verdict") == "correct" and not r.get("hinted")}
+        errors = sum(r.get("verdict") in ("wrong", "partial") for r in records)
+        action = "integrated_diagnostic"
+        reason = "Capability evidence is insufficient; diagnose within the current task, not definitions."
+        if self.data.get("grade_state") == "pending":
+            action, reason = "blocked_pending_grade", "Reconcile read-only; preserve evidence."
+        elif self.status == "paused":
+            action, reason = "resume_original_question", "Do not replace the paused question."
+        elif self.status == "waiting_answer":
+            action, reason = "await_current_answer", "Keep the displayed question and original evidence."
+        elif self.status == "graded":
+            action, reason = "return_to_original_task", "Review receipt recorded; task capability still needs independent evidence."
+        elif e.get("first_attempt") is not None:
+            d = self.closure_decision(budget_exhausted=not self.can_continue())
+            if d.action == "close_with_gap":
+                action, reason = "close_with_gap", "Budget exhausted; no mastery claim."
+            elif d.action in ("repair_current", "probe_current"):
+                action = "minimal_prerequisite_repair"
+                reason = "Repair only the observed blocker; then require fresh independent transfer."
+            elif d.action == "ask_transfer" or (e.get("transfer_first_failed") and not independent):
+                action, reason = "fresh_independent_transfer", "Assisted or corrected answers do not establish fresh transfer."
+            else:
+                action = "return_to_original_task" if self.data.get("task") else "close_current_objective"
+                reason = "Close/grade through existing safeguards, then resume the original task; no forced level upgrade."
+        return {"action": action, "reason": reason, "task": self.data.get("task"),
+                "bottleneck": self.data.get("bottleneck"), "evidence": dict(e),
+                "questions_used": self.questions_used, "repeated_errors": errors,
+                "active_seconds": self.active_elapsed_seconds() if self.data.get("time_accounting") == "explicit" else None,
+                "independent_transfers": len(independent),
+                "marginal_value": "diminishing" if len(independent) >= 2 else "not_established",
+                "capability_claim": "session_evidence_only" if independent else "insufficient_evidence"}
 
     def allows_another_prompt(self) -> bool:
         """One question can retry up to a fixed cap before forcing a verdict."""

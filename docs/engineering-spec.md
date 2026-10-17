@@ -17,6 +17,18 @@
 ## 教学与持久化原则
 统一见 [learning-contract.md](learning-contract.md)。rubric、hint 送达登记及只读 reconcile 的调用示例见仓库 `SKILL.md`；回执核验细节见 [audit-recovery.md](audit-recovery.md)。
 
+## Evidence-first route implementation
+`session guidance` is read-only; `session answer` adds `teaching_guidance` while
+preserving `decision`. TutorSession derives advice from existing task/evidence and
+answer_records; new records add is_transfer/attempt, legacy records remain unknown.
+No migration, extra database or scheduler. Distinct first-attempt unhinted correct
+transfer question strings are counted conservatively, not certified semantically
+novel. Two such records signal diminishing marginal practice value, not mastery.
+Unknown active time returns null. Pending grades block teaching, waiting questions
+are preserved, closure still requires existing grade receipts. Failed transfers route
+to repair before fresh testing and retain transfer_first_failed even after correction.
+Advice never writes Level, Roadmap, Anki or claims source verification.
+
 ## 1. 核心原则
 
 - **Anki 管遗忘**（长期 Concept 状态 + FSRS 调度，唯一事实源）
@@ -60,9 +72,9 @@ Level = **已验证的最高能力层级**，是证据记录，不是每次 Sess
 | 层级 | 定义 | 典型验证 |
 |------|------|----------|
 | L0 Recognition | 看到选项能识别 | 选择题 |
-| L1 Recall | 无选项能独立回忆 | 简答/定义/公式 |
+| L1 Recall | 能独立解释机制与边界 | 无提示解释并论证 |
 | L2 Application | 陌生情境能应用 | 变式题/诊断案例 |
-| L3 Construction | 能从零设计/审计/解释 | 写契约/审研究/设计流程 |
+| L3 Construction | 独立研究/模型构造 | 自选问题、模型、假设、证据、检验和反例 |
 
 ## 6. 一题一答 + 反馈铁律
 

@@ -161,6 +161,7 @@ def main(argv: list[str] | None = None) -> int:
     clock = steps.add_parser("time")
     clock.add_argument("seconds", type=int, help="explicit observed active study seconds, never wall waiting")
     steps.add_parser("show")
+    steps.add_parser("guidance", help="read-only evidence-first teaching advice")
     steps.add_parser("snapshots")
     steps.add_parser("resume").add_argument("--snapshot", default=None)
 
@@ -245,7 +246,7 @@ def _session_dispatch(args) -> int:
     action = args.session_action
     current = load_session(path)
     from session import assert_safe_snapshots
-    if action not in ("show", "snapshots", "reconcile"):
+    if action not in ("show", "guidance", "snapshots", "reconcile"):
         assert_safe_snapshots(path)
     if action == "snapshots":
         snapshots = []
@@ -264,7 +265,7 @@ def _session_dispatch(args) -> int:
             raise SessionError("no paused snapshot")
         print(json.dumps(s.to_dict(), ensure_ascii=False))
         return 0
-    if current and current.data.get("grade_state") == "pending" and action not in ("show", "reconcile"):
+    if current and current.data.get("grade_state") == "pending" and action not in ("show", "guidance", "reconcile"):
         raise SessionError("pending grade: reconcile before changing session")
     if action == "start":
         if current and current.status == "paused":
@@ -295,6 +296,9 @@ def _session_dispatch(args) -> int:
         if current is None:
             raise SessionError("no active session")
         s = current
+        if action == "guidance":
+            print(json.dumps(s.teaching_guidance(), ensure_ascii=False))
+            return 0
         if action == "show":
             goal = strategy.show()
             data = dict(s.to_dict())
@@ -409,6 +413,7 @@ def _session_dispatch(args) -> int:
     if action == "answer":
         decision = s.closure_decision(budget_exhausted=not s.can_continue())
         result["decision"] = {"action": decision.action, "grade": decision.grade}
+        result["teaching_guidance"] = s.teaching_guidance()
     print(json.dumps(result, ensure_ascii=False))
     return 0
 

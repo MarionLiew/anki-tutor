@@ -97,9 +97,9 @@ VALID_STATUS = {STATUS_ACTIVE, STATUS_RETIRED, STATUS_MERGED}
 LEVELS = ["L0", "L1", "L2", "L3"]
 LEVEL_DEFINITION = {
     "L0": "Recognition — 看到选项能识别",
-    "L1": "Recall — 无选项能独立回忆",
+    "L1": "Recall — 能独立解释机制与边界",
     "L2": "Application — 陌生情境能应用",
-    "L3": "Construction — 能从零设计、审计、解释系统",
+    "L3": "Construction — 独立研究与模型构造",
 }
 
 ERROR_TYPES = [
