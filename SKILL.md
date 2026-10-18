@@ -204,6 +204,13 @@ Cron 行为以 PASSIVE REVIEW 的确定性入口为准。无到期概念且无�
 
 ## 测试与验收
 `cd anki-tutor && python3 -m pytest tests/ -q`（mock AnkiConnect，离线可跑）；对真实 Anki 可用 `src/cli.py` 各子命令冒烟。验收对齐文档 AC-01~AC-09 / T01~T13（见 tests/ 注释）。
+## X 来源的最小增量筛选
+
+- 账号分组只是检索起点、不是永久排名：套利核心 Boywus、Billy0xFF；重点 Metabape、quant_arb、cryptarbitrage；专项 Cbb0fe；TaoRay、Victory_1919 暂不作套利主流；0xTria、AlvaroCartea 仅考察，内容验证前不扩订阅。不自动关注、不建订阅库、Cron 或 Agent。
+- 先复用 Source Library 和已有研究；实际探测 user lookup / timeline 的可用性、参数、分页与可见限制，费用查不到就写未知，不能从凭证推断。优先近30天适当分页，不足再90天；工具无分页/报错时明示实际覆盖，搜索结果不是完整时间线。跨账号主题或时间线不可用才转 search，不盲重试。
+- 按内容筛机制、现金流、公式、规则、数据、代码及可证伪记录，不按点赞或收益宣传筛。精选3–5篇但不足就直说，不凑数。保存最小原始响应与检索收据，核对作者、URL、精确发布时间、全文及引用上下文；Snowflake时间仅交叉检查，不证明全文。X官方syndication可能仅有长文开头，`note_tweet` 不等于全文；检索模型扩展文字不可冒充原文，未取得部分逐项标未知。
+- 每篇区分已核实内容、作者观点与待核验规则/收益，映射已有Concept及QuantLab可检验项。交易线索只做必要少量真实API核验，不重复扫描器或替用户完成全研究。选一篇经核实材料或明确受限的短摘录走既有handoff，仅保存教学准备；不批建卡、不改当前待答题、不评分或推进roadmap。真实学习验收必须等用户答案。
+
 ## 跨聊天学习交接与快捷审计导出
 
 - 用户说“同步到 AnkiTutor / 学这个”：将来源、学习动机、预期能力、验收标准、待核验事实写入以 `# Learning Handoff`（或 `# 学习交接`）开头的本地 Markdown；执行 `python3 src/cli.py handoff import <path>`；确认 CLI 返回成功后才报告已摄入。只入 Source Library，不等于创建 Concept、学习或评分。后续教学沿用本 Skill 的概念去重与动态提问。
